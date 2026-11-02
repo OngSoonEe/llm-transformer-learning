@@ -1,0 +1,1553 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width,initial-scale=1" name="viewport"/><meta content="Learn transformers with 21 intuitive chapters, 14 diagrams, interactive numerical examples, LoRA, MoE, and a Qwen configuration walkthrough." name="description"/><title>Transformers — An Intuitive Tutorial</title><link href="assets/tutorial.css" rel="stylesheet"/><link href="https://ongsoonee.github.io/llm-transformer-learning/" rel="canonical"/></head><body><div class="progress" id="progress"></div><div class="top"><a class="repo-link" href="https://github.com/OngSoonEe/llm-transformer-learning" aria-label="View the tutorial GitHub repository">GitHub ↗</a><div class="identity"><strong>Inside the Transformer</strong><a class="author-link" href="https://www.linkedin.com/in/soon-ee-ong/" aria-label="Ong Soon Ee on LinkedIn">Ong Soon Ee</a></div></div><div class="layout"><nav aria-label="Tutorial contents" class="sidebar" id="contents"><details id="chapter-list" open><summary>Chapter contents</summary><p class="eyebrow">The roadmap</p><div aria-live="polite" class="no-results" id="search-status"></div><h3>Foundations</h3><ol start="1"><li><a href="#ch1">What a language model actually computes</a></li><li><a href="#ch2">The minimum mathematics for reading a model</a></li><li><a href="#ch3">Tokens become representations</a></li></ol><h3>The transformer core</h3><ol start="4"><li><a href="#ch4">Attention: how tokens exchange information</a></li><li><a href="#ch5">Multiple heads and positional information</a></li><li><a href="#ch6">Feed-forward networks: computation within each token</a></li><li><a href="#ch7">The complete transformer block</a></li><li><a href="#ch8">From hidden states to generated text</a></li></ol><h3>How models learn</h3><ol start="9"><li><a href="#ch9">Training and gradients</a></li><li><a href="#ch10">Pretraining, instruction tuning, and reasoning training</a></li></ol><h3>Dense and MoE</h3><ol start="11"><li><a href="#ch11">Dense transformers</a></li><li><a href="#ch12">Mixture-of-experts from first principles</a></li><li><a href="#ch13">What makes MoE difficult in practice</a></li></ol><h3>Efficiency and architecture</h3><ol start="14"><li><a href="#ch14">Inference: prefill, decoding, and memory</a></li><li><a href="#ch15">Long context and hybrid sequence models</a></li><li><a href="#ch16">Precision, quantization, and distributed execution</a></li><li><a href="#ch17">Multimodal inputs and multi-token prediction</a></li></ol><h3>Qwen walkthrough</h3><ol start="18"><li><a href="#ch18">Qwen’s architectural evolution</a></li><li><a href="#ch19">Read a real Qwen model configuration</a></li><li><a href="#ch20">Follow a token through dense and MoE Qwen models</a></li><li><a href="#ch21">Compare current Qwen variants</a></li></ol><h3>Reference</h3><p><a href="#glossary">Plain-English glossary</a></p><p><a href="#sources">Sources and diagram index</a></p></details></nav><main><header class="hero"><p class="eyebrow">Inside the Transformer · 21 chapters</p><h1>Transformers, one clear idea at a time.</h1><p class="lede">From a token’s first numbers to attention, training, MoE, and a real Qwen configuration.</p><p><a href="#ch1">Start at Chapter 1</a> · <a href="#ch4">Understand Q / K / V</a> · <a href="#ch9">See how training works</a> · <a href="#ch19">Read the real configuration</a></p><p class="project-links"><a href="https://github.com/OngSoonEe/llm-transformer-learning">View on GitHub / Star this guide</a> · <a href="https://github.com/OngSoonEe/llm-transformer-learning/fork">Fork your own copy</a> · <a href="https://github.com/OngSoonEe/llm-transformer-learning/issues">Report an issue</a></p></header><section aria-label="How to use this tutorial"><h3>Read it as a guided explanation, not a test.</h3><p>Follow the chapters in order, or use the contents to revisit a question. Hints resolve common confusion. Numerical examples make shapes and operations concrete. Select a diagram to enlarge it; dense supplied figures are easiest to read full-size.</p><div aria-label="The basic model pipeline" class="flow"><span>Text → token IDs</span><span class="arrow">→</span><span>Vectors</span><span class="arrow">→</span><span>Repeated blocks</span><span class="arrow">→</span><span>Vocabulary scores</span><span class="arrow">→</span><span>Next token</span></div><aside class="keypoint"><strong>The central idea.</strong> The model transforms a vector at every supplied position. Attention lets a position read permitted earlier positions. The final vector at the last available position is used to predict the next token. During training, many positions can predict their next tokens together through one shared stack.</aside><details><summary>One notation convention for the whole tutorial</summary><p>Main hidden states have shape <code>[B,T,D]</code>: sequences per batch, positions per sequence, components per position. Toy tables often omit B=1. We show row activations <code>X[T,in]</code> and stored linear weights <code>W[out,in]</code>, so the calculation is <code>Y = X Wᵀ</code>. A diagram using column vectors may instead write <code>y = W x</code>: the same transformation with a different orientation.</p><p>Examples using “The”, “cat”, or “It” as individual tokens simplify tokenizer behavior. A real tokenizer, chat template, or multimodal input may produce different positions.</p></details></section><section class="chapter" id="ch1">
+<p class="eyebrow">Foundations · The task before the machinery</p>
+<h2>1. What a language model actually computes</h2>
+<p class="purpose">A language model uses the available context to calculate what token could come next.</p>
+<h3>The smallest useful picture</h3>
+<p>A <strong>token</strong> is a text unit from a model's vocabulary. It may be a word, part of a word, punctuation, or a piece that includes a space. The model receives an ordered sequence of token IDs. It computes a score for each possible next token, then converts those scores into probabilities.</p>
+<p>The model does not fetch a complete answer from a table. Its learned numerical operations calculate these probabilities from the current input.</p>
+<pre class="math">Available context → model → next-token probabilities
+                                  ↓
+                           select one token
+                                  ↓
+                    append it to the context → repeat</pre>
+<h3>A tiny prediction example</h3>
+<p>Suppose the input is “The capital of France is”. For this teaching example only, assume “Paris” is one token and the distribution is simplified to three candidates.</p>
+<div class="table-wrap"><table><thead><tr><th>Candidate next token</th><th>Illustrative probability</th></tr></thead><tbody><tr><td>Paris</td><td>0.70</td></tr><tr><td>Lyon</td><td>0.20</td></tr><tr><td>Other candidate</td><td>0.10</td></tr></tbody></table></div>
+<pre class="math">0.70 + 0.20 + 0.10 = 1.00
+
+“The capital of France is”
+→ select Paris
+“The capital of France is Paris”
+→ calculate a new distribution; perhaps select a period
+“The capital of France is Paris.”
+→ continue, or select an end-of-response token</pre>
+<p>The selected token becomes input for the next prediction. A complete response is therefore a sequence of decisions, not one giant vocabulary item.</p>
+<h3>Policy is not the selection rule</h3>
+<p>In language-model reinforcement learning, the <strong>policy</strong> normally means the model's conditional distribution over next tokens. The <strong>decoding rule</strong> uses that distribution to choose a token. Greedy decoding takes the highest-scoring token; sampling can choose a less likely token.</p>
+<pre class="math">Policy: πθ(next token | available context)
+θ = the model's learned parameters
+
+Decoding rule: choose a token using that distribution</pre>
+<p>“Update the policy” usually means train the parameters so the probabilities change. It does not simply mean change from sampling to greedy selection. Sampling settings can also alter the actual distribution used to draw tokens; keep the model distribution and the selection procedure separate.</p>
+<h3>What changes while answering?</h3>
+<div class="table-wrap"><table><thead><tr><th>Thing</th><th>What it contains</th><th>During ordinary generation</th></tr></thead><tbody><tr><td>Parameters, often called weights</td><td>Learned numerical settings</td><td>Normally stay fixed</td></tr><tr><td>Context</td><td>System instructions, messages, documents, and generated continuation</td><td>Can grow as tokens are appended</td></tr><tr><td>Activations</td><td>Working numerical values computed for this input</td><td>Computed as the input is processed</td></tr></tbody></table></div>
+<p>Training changes the parameters using a learning signal. For ordinary next-token training, the source text supplies the target: in “The capital of France is Paris”, the target after “is” is the next token representing “Paris”, assuming that tokenization. Across many examples, useful prediction can require learning grammar, facts, code, and relationships.</p>
+<aside class="keypoint"><p><strong>Keep three ideas separate.</strong> Next-token prediction is the task. A transformer is the machinery. Dense and mixture-of-experts models organize parts of that machinery differently. Both can use the same basic generation loop.</p></aside>
+<aside class="caution"><p><strong>Likely does not mean true.</strong> A high-probability continuation can be fluent and still be wrong. The probabilities above are invented teaching numbers, not measured Qwen output.</p></aside>
+</section>
+<section class="chapter" id="ch2">
+<p class="eyebrow">Foundations · Read the numbers without getting lost</p>
+<h2>2. The minimum mathematics for reading a model</h2>
+<p class="purpose">Vectors, matrix operations, and axis labels let us describe exactly what information a model holds and changes.</p>
+<h3>A vector has one axis and many components</h3>
+<p>A vector is an ordered list of numbers. A token's embedding or hidden state is represented by such a list. The token itself is a vocabulary item, not the list.</p>
+<pre class="math">x = [1, 2, 3]
+shape = [3]
+tensor rank = 1 axis
+vector dimension = 3 components</pre>
+<p>So an 8,192-component vector is still a one-dimensional array. Here <strong>tensor rank</strong> means the number of axes, not the separate linear-algebra concept of matrix rank. <strong>Hidden dimension</strong> means the number of components in each position's main internal vector.</p>
+<p>The components collectively carry useful information. Their job is not only to measure how close two tokens are. Some coordinates can carry useful signals, but there is no universal list of labels such as “city”, “noun”, or “tired” for the coordinates. The whole representation works with the model's other learned operations.</p>
+<h3>A learned matrix mixes components</h3>
+<p>Each output component of a linear projection is a weighted sum of input components. Throughout this tutorial, activations are rows and a stored weight matrix has shape <strong>[output components, input components]</strong>.</p>
+<pre class="math">x: [Din]                 W: [Dout, Din]
+y = x Wᵀ + b             y: [Dout]
+
+Toy example, with bias b omitted:
+x = [1, 2, 3]
+W = [[1, 0, 1],
+     [0, 2, 0]]          shape [2, 3]
+
+First output  = 1×1 + 2×0 + 3×1 = 4
+Second output = 1×0 + 2×2 + 3×0 = 4
+y = [4, 4]</pre>
+<p>This projection changes three components into two. It can also expand a vector or keep its width unchanged. <strong>W</strong> is simply the name of the weight matrix in this equation. Not every matrix contains weights: a matrix of input vectors contains computed data. Learned parameters can also be vectors, such as a normalization scale.</p>
+<aside class="hint"><p><strong>Two equivalent writing conventions.</strong> Earlier toy explanations wrote a column vector as <code>y = W x</code>. Transposing that equation gives the row-vector form <code>y = x Wᵀ</code>. The supplied large-number diagrams instead draw matrices as [input, output] and write <code>XW</code>. Those drawn matrices are the transpose of the stored weights used in our text. The computation and parameter count are the same.</p></aside>
+<h3>Weights stay; activations change</h3>
+<p>Use the same W with a different input:</p>
+<pre class="math">x = [1, 2, 3] → x Wᵀ = [4, 4]
+x = [2, 1, 0] → x Wᵀ = [2, 2]</pre>
+<p>The matrix did not change. The inputs and outputs did. These input-dependent working tensors are <strong>activations</strong>. An <strong>activation function</strong>, such as SiLU, is a nonlinear operation applied to numbers. It is not another name for every activation tensor.</p>
+<h3>A dot product makes one matching score</h3>
+<pre class="math">[1, 2] · [3, 4] = 1×3 + 2×4 = 11
+
+Query q = [1, 0]
+Key A   = [3, 0] → q · Key A = 3
+Key B   = [0, 2] → q · Key B = 0</pre>
+<p>A scalar score lets us compare candidates. It is not the information transferred and is not attention by itself. Attention turns a list of such scores into weights, then uses those weights to combine vectors. Dot-product magnitude depends on both direction and vector length; it is not automatically cosine similarity.</p>
+<h3>Stack vectors to make a sequence; stack sequences to make a batch</h3>
+<pre class="math">One position:        [D]       one axis: components
+One sequence:        [T, D]    two axes: positions, components
+One batch:           [B, T, D] three axes: sequences, positions, components
+
+X[b, t, c] = component c at position t of sequence b</pre>
+<div class="table-wrap"><table><thead><tr><th>Axis</th><th>Meaning</th><th>What decides its size?</th></tr></thead><tbody><tr><td>B</td><td>Number of sequences processed together</td><td>Training or serving system; memory and throughput goals matter</td></tr><tr><td>T</td><td>Number of positions per prepared sequence</td><td>Input length and preparation; padding or chunking can affect the work layout</td></tr><tr><td>D</td><td>Components per position's main hidden state</td><td>Model architecture</td></tr></tbody></table></div>
+<p>Shape describes <em>every</em> axis, not just batch size. A batch does not normally let one sequence read another sequence's context. Padding positions require appropriate masking; they are not useful extra text.</p>
+<pre class="math">Toy shape [2, 5, 100]:
+2 sequences, each with 5 positions, each position with 100 components
+Hidden dimension = 100, not the product of the axis sizes
+Total elements = B × T × D</pre>
+<h3>Number impression: a real model, with an example input</h3>
+<p>The next diagram uses the older <strong>Qwen2.5-72B-Instruct</strong> as a scale anchor, not as the latest Qwen architecture. Its model configuration specifies hidden width 8,192, FFN intermediate width 29,568, and 80 blocks. The chosen batch size 1 and sequence length 1,024 are example input settings.</p>
+<figure data-asset="Transformer Block Data and Weights Overview.png"><img alt="Transformer Block Data and Weights Overview" decoding="async" loading="lazy" src="assets/diagram-01.png"/><figcaption>Activations are the moving data; matrices are stored learned transformations. The diagram writes weights as [input, output]; our equations use stored W[output, input] and multiply by Wᵀ. Its 1,024-position input is an example, not a context limit.</figcaption></figure>
+<pre class="math">One main hidden-state tensor: [1, 1024, 8192]
+Elements = 1 × 1024 × 8192 = 8,388,608
+If stored in BF16: 2 bytes per element
+Raw storage = 16,777,216 bytes = 16 MiB</pre>
+<aside class="caution"><p><strong>That is one tensor, not the model's memory requirement.</strong> Weights, other activations, expanded FFN tensors, caches, temporary workspaces, and training state require additional memory. A longer input changes data sizes and computation; it does not create a new W for every token.</p></aside>
+<p class="source-note">Geometry source: <a href="https://huggingface.co/Qwen/Qwen2.5-72B-Instruct/raw/main/config.json">Qwen2.5-72B-Instruct configuration</a>. Large-number counts in this tutorial are calculations from that geometry, not measured activations.</p>
+</section>
+<section class="chapter" id="ch3">
+<p class="eyebrow">Foundations · Text becomes working representations</p>
+<h2>3. Tokens become representations</h2>
+<p class="purpose">Tokenization gives text a numerical identity; embeddings give each position a starting vector that the blocks can process.</p>
+<h3>Four names for four different things</h3>
+<div class="table-wrap"><table><thead><tr><th>Name</th><th>What it is</th><th>Example, for illustration</th></tr></thead><tbody><tr><td>Token</td><td>A vocabulary item representing a text piece</td><td>“Paris” or “ is”</td></tr><tr><td>Token ID</td><td>An integer identifying that item in a particular vocabulary</td><td>ID(Paris)</td></tr><tr><td>Embedding</td><td>The learned starting vector selected by that ID</td><td>E[ID(Paris), :]</td></tr><tr><td>Hidden state</td><td>A position's internal vector at a particular processing stage</td><td>The vector after Block 2</td></tr></tbody></table></div>
+<p>A tokenizer follows its vocabulary and splitting rules. It does not normally ask the transformer to understand the sentence first. Reusable pieces allow unfamiliar words, names, and code identifiers without a separate vocabulary entry for every possible complete word.</p>
+<pre class="math">Illustrative tokenization, not a verified Qwen tokenizer result:
+“Paris is beautiful.” → [“Paris”, “ is”, “ beautiful”, “.”]
+
+One token = one item
+One sequence = the ordered list of token occurrences
+One batch = several sequences processed together</pre>
+<h3>An ID selects a row, not a physical address</h3>
+<p>The embedding table E has one row per vocabulary token and one column per component. A token ID is a <strong>row index</strong>. Nearby IDs need not have related meanings. The ID is not a memory address, a similarity score, or a token's universal “real value”.</p>
+<pre class="math">E: [vocabulary size, D]
+Starting vector at position t = E[token_id[t], :]
+
+Toy vocabulary and table, chosen only for teaching:
+ID 0: I    → [1, 0]
+ID 1: am   → [0, 1]
+ID 2: fine → [1, 1]
+
+Sequence [I, am] gives:
+X = [[1, 0],   ← position 0: I
+     [0, 1]]   ← position 1: am
+
+Without batch axis: [2 positions, 2 components]
+With batch axis:    [1 sequence, 2 positions, 2 components]</pre>
+<p>These are <strong>two rows of one sequence</strong>, not two sub-sequences. Stacking adds a position axis. It does not give each vector another component. In a chat example, prompt and answer tokens use this same position axis; answer tokens do not get a new kind of dimension.</p>
+<h3>The same token starts the same, but need not end the same</h3>
+<p>Within one model, the same token ID normally selects the same raw token embedding. Later blocks can produce different hidden states for different occurrences, because their earlier context and positions differ.</p>
+<p>Compare “The financial bank …” and “Beside the river bank …”. If “bank” has the same ID in both, its starting vector is the same. At that position, attention can use the preceding words “financial” or “river”. The resulting hidden states can differ. No explicit human-readable “financial institution” label is required.</p>
+<aside class="caution"><p><strong>Respect the direction of reading.</strong> In “The bank approved the loan”, the words “approved the loan” cannot influence the hidden state at “bank” in a causal model: they are later positions. Later positions can use them. Choose preceding clues when explaining how the state at “bank” changes.</p></aside>
+<pre class="math">Token ID
+→ raw embedding
+→ Block 1 hidden state
+→ Block 2 hidden state
+→ …
+→ final hidden state
+→ next-token scores</pre>
+<p>“Hidden” means internal to the model. It includes representations in the middle of the network and the final vector before the vocabulary projection.</p>
+<h3>Same width does not mean a universal representation</h3>
+<p>Every position in a given model's main hidden stream normally has the same width D, even if its token represents a different amount of text. Internal projections can temporarily use other widths. Two different models can use different widths, different token splits, or equal widths with entirely different learned coordinates. There is no standard 100-number vector for “Paris” shared by all models.</p>
+<aside class="keypoint"><p><strong>A representation belongs to an occurrence at a stage.</strong> The token ID names a vocabulary item. The embedding is its starting row. The contextual hidden state belongs to this occurrence, in this sequence, after this amount of processing.</p></aside>
+<p>Blocks update the values at the existing positions. They do not append each altered version as another token. In the two-row toy, both rows remain present as the matrix moves through the shared stack. Only adding another input or generated token adds a position.</p>
+</section>
+<section class="chapter" id="ch4">
+<p class="eyebrow">The transformer core · Match first, then transfer information</p>
+<h2>4. Attention: how tokens exchange information</h2>
+<p class="purpose">Attention lets a position receive a weighted mixture of information from the positions it is allowed to read.</p>
+<h3>Why “It” needs more than its own starting vector</h3>
+<p>In “The cat was tired. It …”, the earlier words help predict what follows “It”. Information about “cat” and “tired” can be useful. Attention provides a learned way to bring information from those positions into the working representation at “It”. It does not directly select the word “slept”.</p>
+<p>There are two jobs: decide <strong>how much</strong> each source should contribute, and obtain <strong>what</strong> it contributes. Q and K do the first job. V does the second.</p>
+<div class="table-wrap"><table><thead><tr><th>Vector</th><th>Job</th><th>What it is not</th></tr></thead><tbody><tr><td>Query Q at the receiving position</td><td>Compared with source keys to calculate matching scores</td><td>A question written in English</td></tr><tr><td>Key K at each source position</td><td>The vector that a query matches against</td><td>A permanent importance score for that token</td></tr><tr><td>Value V at each source position</td><td>Information supplied to the weighted mixture</td><td>The updated hidden state after this attention step</td></tr></tbody></table></div>
+<p>A useful limited analogy is a library search: the search description is Q, each book's searchable description is K, and its contents are V. Matching descriptions helps decide what to read, but descriptions and contents serve different purposes. Attention mixes several sources rather than necessarily choosing one book. The actual model uses learned numbers, not literal search sentences.</p>
+<h3>First, make Q, K, and V at every position</h3>
+<p>We start with a small numerical example based on the chat's teaching values. It is one head with two-component vectors. Treat words as simplified positions. For this close-up, omit normalization, positional rotation, and biases. None of the values below are real Qwen activations.</p>
+<pre class="math">Stored matrices: [output components, input components]
+WQ = [[1, 0],       WK = [[1, 0],       WV = [[2, 0],
+      [0, 1]]             [0, 0.5]]           [0, 3]]
+
+q = x WQᵀ          k = x WKᵀ          v = x WVᵀ</pre>
+<div class="table-wrap"><table><thead><tr><th>Position</th><th>Toy hidden state x</th><th>Q</th><th>K</th><th>V</th></tr></thead><tbody><tr><td>0: The</td><td>[0, 0]</td><td>[0, 0]</td><td>[0, 0]</td><td>[0, 0]</td></tr><tr><td>1: cat</td><td>[2, 0]</td><td>[2, 0]</td><td>[2, 0]</td><td>[4, 0]</td></tr><tr><td>2: was</td><td>[1, 0]</td><td>[1, 0]</td><td>[1, 0]</td><td>[2, 0]</td></tr><tr><td>3: tired</td><td>[0, 2]</td><td>[0, 2]</td><td>[0, 1]</td><td>[0, 6]</td></tr><tr><td>4: It</td><td>[1, 1]</td><td>[1, 1]</td><td>[1, 0.5]</td><td>[2, 3]</td></tr><tr><td>5: slept</td><td colspan="4">Future relative to position 4; its contribution is blocked</td></tr></tbody></table></div>
+<p>Every position produces all three vectors. “cat” is not only a key and “It” is not only a query. The same WQ is used at every row, as are WK and WV. Different inputs can produce different outputs. Q and K happen to be equal for “cat” here because its second component is zero; their roles remain different.</p>
+<aside class="hint"><p><strong>Where do these matrices come from?</strong> They are initialized before training, learned during training, and loaded from the checkpoint when using a pretrained model. During normal inference they stay fixed. They are attached to a specific operation in a specific block, not selected according to whether the input word is “cat” or “Paris”.</p></aside>
+<h3>Then match the query at “It” against each allowed key</h3>
+<pre class="math">Receiving query: q(It) = [1, 1]
+Score for source j: s_j = q(It) · k_j
+Scaled score:      ℓ_j = s_j / √dh
+Here dh = 2 components per query/key, so divide by √2.</pre>
+<p>The scaling helps keep dot-product scores from growing too large as the head width grows. Otherwise softmax can become extremely concentrated. Dividing by √dh controls that tendency; it does not change how many positions are readable.</p>
+<div class="table-wrap"><table><thead><tr><th>Source position</th><th>Key</th><th>Dot-product score</th><th>Scaled score</th><th>Attention weight</th></tr></thead><tbody><tr><td>The</td><td>[0, 0]</td><td>0</td><td>0.0000</td><td>0.0829</td></tr><tr><td>cat</td><td>[2, 0]</td><td>2</td><td>1.4142</td><td>0.3411</td></tr><tr><td>was</td><td>[1, 0]</td><td>1</td><td>0.7071</td><td>0.1682</td></tr><tr><td>tired</td><td>[0, 1]</td><td>1</td><td>0.7071</td><td>0.1682</td></tr><tr><td>It</td><td>[1, 0.5]</td><td>1.5</td><td>1.0607</td><td>0.2395</td></tr><tr><td>slept</td><td>Not readable here</td><td>Masked</td><td>−∞</td><td>0</td></tr></tbody></table></div>
+<p>Softmax converts the allowed scores into nonnegative weights that sum to one. The future score is set to negative infinity before softmax, giving zero weight. Setting a forbidden score to zero would not block it: exp(0) is positive.</p>
+<pre class="math">α_j = exp(ℓ_j) / Σallowed sources exp(ℓ_source)
+
+For “It”, allowed sources are positions 0 through 4, including itself.
+Softmax axis = source/key position
+Not vocabulary item, vector component, or head index</pre>
+<h3>Finally, multiply each weight by its matching value vector</h3>
+<p>The output from the matching stage connects to the mixing stage. Each weight multiplies the <strong>computed V vector for the same source position</strong>, not the learned WV matrix, and not only V(It).</p>
+<pre class="math">Head output at It = Σj α_j v_j
+
+≈ 0.082934 × [0, 0]       ← The
+ + 0.341129 × [4, 0]       ← cat
+ + 0.168200 × [2, 0]       ← was
+ + 0.168200 × [0, 6]       ← tired
+ + 0.239537 × [2, 3]       ← It
+
+≈ [2.1800, 1.7278]</pre>
+<p>The calculation uses unrounded weights; displayed numbers are rounded. The result is a two-component <strong>head output</strong>, not a new token and not a “final V”. After combining heads and applying the attention output projection, the attention branch returns an update to the block.</p>
+<aside class="keypoint"><p><strong>Q/K decide the mixture; V supplies the material.</strong> Keep Q and K unchanged but change V, and the weights stay the same while the output changes. Change Q or K, and the weighting can change even if V stays the same. Separate learned projections allow matching and information transfer to be learned differently.</p></aside>
+<h3>Two components do not mean two readable tokens</h3>
+<p>Q's width tells us how many numbers participate in each comparison. The number of allowed source positions tells us how many comparisons are made. A two-component query can compare with five, a hundred, or more two-component keys. Head width is not a look-back limit. A source's weight is relative to this query, head, and context—not one permanent importance assigned to that token.</p>
+<h3>Every row has its own attention, in one shared calculation</h3>
+<p>The diagram may enlarge only “It”, but attention is not restricted to the last row. For one sequence and one head, collect all queries, keys, and values as matrices:</p>
+<pre class="math">Q: [T, dh]       K: [T, dh]       V: [T, dv]
+
+Scores = Q Kᵀ / √dh              shape [T, T]
+A = softmax_over_key_positions(Scores + M)
+O = A V                          shape [T, dv]
+
+M[i,j] = 0   if j ≤ i
+       = −∞  if j &gt; i
+
+Score-grid rows    = receiving/query positions
+Score-grid columns = source/key positions
+Hidden-state columns, by contrast, = vector components</pre>
+<p>For the row at “cat”, only “The” and “cat” are readable. For the row at “It”, positions through “It” are readable. These rows can be computed together because they use Q/K/V projected from the block's already available input—not the newly completed attention output of another row.</p>
+<aside class="caution"><p><strong>Causal, not “casual”.</strong> The causal rule applies in training and prompt prefill, not only in training. The mask is a fixed allowed-read pattern, not a moving or rotating operation. During one-token cached decoding, future K/V are normally absent, so an explicit triangular mask may be unnecessary; the causal rule still holds.</p></aside>
+</section>
+<section class="chapter" id="ch5">
+<p class="eyebrow">The transformer core · Several mixtures, with order</p>
+<h2>5. Multiple heads and positional information</h2>
+<p class="purpose">Multiple heads provide different information mixtures at each position, while positional information makes the comparisons sensitive to token order.</p>
+<h3>Why one mixture may not be enough</h3>
+<p>One head produces one set of source weights for each receiving position. “It” may need both information about who is involved and information about their condition. One head can combine both, but multiple heads allow separate weighting patterns and separate projected features before their outputs are joined.</p>
+<p>A head <em>could</em> emphasize “cat” while another emphasizes “tired”. Those are imagined teaching roles, not roles assigned by developers or measured in this Qwen model. Heads are learned numerical mechanisms. More heads are not automatically better.</p>
+<h3>Same positions, different learned head groups</h3>
+<p>In standard multi-head attention, different heads use different groups of learned query, key, and value weights. All positions share the weights of a given head within a given block. Another block normally has another set of weights.</p>
+<pre class="math">Toy: D = 4, two heads, dh = 2
+
+Stored WQ: [4 output components, 4 input components]
+First 2 output rows of WQ  → Head 1 queries
+Next  2 output rows of WQ  → Head 2 queries
+
+For one position:
+Head 1 output: [a, b]
+Head 2 output: [c, d]
+Concatenate:  [a, b, c, d]
+Attention branch output = [a, b, c, d] WOᵀ</pre>
+<p>The letters are placeholders, not measured values. The output projection WO can combine features from different heads at this position. It is not the vocabulary projection, or LM head, after the block stack.</p>
+<aside class="keypoint"><p><strong>Heads are not assigned to different tokens.</strong> With nine heads, it is not three heads for “I”, three for “am”, and three for “fine”. All nine heads produce outputs at every processed position. A head is not a processor with a fixed number of token slots. Hardware may schedule or tile its work separately.</p></aside>
+<h3>MHA, GQA, and MQA change K/V sharing</h3>
+<div class="table-wrap"><table><thead><tr><th>Design</th><th>Query heads</th><th>Key/value heads</th><th>Sharing</th></tr></thead><tbody><tr><td>MHA: multi-head attention</td><td>Hq</td><td>Hq</td><td>Each query head has its own K/V head</td></tr><tr><td>GQA: grouped-query attention</td><td>Hq</td><td>Fewer than Hq, more than one</td><td>Each group of query heads shares one K/V head</td></tr><tr><td>MQA: multi-query attention</td><td>Hq</td><td>One</td><td>All query heads share one K/V head</td></tr></tbody></table></div>
+<p>Each query head still performs the complete match → make weights → mix information calculation. It does not require its own unique K/V vectors. Different queries can create different mixtures from the same shared sources.</p>
+<h3>A small GQA example</h3>
+<p>Suppose two query heads share keys [1, 0] and [0, 1], with values [10, 0] and [0, 10]. The first query is [1, 0]; the second is [0, 1]. Divide scores by √2, and suppose both source positions are allowed.</p>
+<pre class="math">Head 1 scaled scores = [0.7071, 0]
+Head 1 weights       ≈ [0.6698, 0.3302]
+
+Head 2 scaled scores = [0, 0.7071]
+Head 2 weights       ≈ [0.3302, 0.6698]
+
+Head 1 output ≈ 0.6698×[10, 0] + 0.3302×[0, 10]
+              ≈ [6.6976, 3.3024]
+Head 2 output ≈ 0.3302×[10, 0] + 0.6698×[0, 10]
+              ≈ [3.3024, 6.6976]
+
+Same K/V sources; different Q → different mixtures
+(Output values use unrounded weights.)</pre>
+<p>This is a local illustrative GQA comparison, not a full model trace. In generation, past K/V are stored in a <strong>KV cache</strong>. Fewer K/V heads reduce their projection width and cache storage relative to MHA with the same query-head count and head width. Shared K/V need not be physically copied for every query head.</p>
+<h3>Real-model geometry: 64 query heads, 8 K/V heads</h3>
+<p>The Qwen2.5-72B-Instruct anchor has 64 query heads, 8 K/V heads, and 128 components per head. “64 attention heads” refers to the query-head count; it does not mean 64 separate K/V heads.</p>
+<pre class="math">Query width = 64 × 128 = 8192
+K/V width   =  8 × 128 = 1024
+Query heads per K/V group = 64 / 8 = 8
+
+One-based grouping in the diagram:
+Q heads 1–8   share K/V head 1
+Q heads 9–16  share K/V head 2
+…
+Q heads 57–64 share K/V head 8</pre>
+<figure data-asset="Transformer Attention GQA Infographic.png"><img alt="Transformer Attention GQA Infographic" decoding="async" loading="lazy" src="assets/diagram-02.png"/><figcaption>One token vector becomes head vectors, then returns to model width. This Qwen2.5-72B-Instruct example has 64 independent query-based outputs supplied by 8 shared K/V heads. The image's projection matrices use [input, output] and XW; our stored-weight convention uses [output, input] and XWᵀ. Word positions and attention patterns are illustrative.</figcaption></figure>
+<div class="table-wrap"><table><thead><tr><th>Stage</th><th>Example shape</th><th>Axis meanings</th></tr></thead><tbody><tr><td>Normalized input</td><td>[1, 1024, 8192]</td><td>[batch, position, hidden component]</td></tr><tr><td>Q projection</td><td>[1, 1024, 8192]</td><td>[batch, position, projected query component]</td></tr><tr><td>K and V projections</td><td>[1, 1024, 1024]</td><td>[batch, position, projected K/V component]</td></tr><tr><td>Q organized into heads</td><td>[1, 64, 1024, 128]</td><td>[batch, query head, position, head component]</td></tr><tr><td>K and V organized into heads</td><td>[1, 8, 1024, 128]</td><td>[batch, K/V head, position, head component]</td></tr><tr><td>Logical attention scores</td><td>[1, 64, 1024, 1024]</td><td>[batch, query head, query position, key position]</td></tr><tr><td>Head outputs</td><td>[1, 64, 1024, 128]</td><td>[batch, query head, position, output component]</td></tr><tr><td>Joined outputs, then WO</td><td>[1, 1024, 8192]</td><td>[batch, position, hidden component]</td></tr></tbody></table></div>
+<p>In K/V shape [1, 1024, 1024], one 1,024 is positions and the other is projected features. Their equality is accidental. Splitting the projected feature axis into heads is a reshape and axis rearrangement, not another learned layer. A different sequence length changes the position axis, not the projection width.</p>
+<aside class="caution"><p><strong>Logical shape is not necessarily allocated storage.</strong> The full score grid describes the mathematical comparisons. Efficient attention kernels can calculate the result without storing the whole grid. Nor does a 128-component query limit attention to 128 earlier tokens.</p></aside>
+<h3>Order needs another signal</h3>
+<p>“Dog bites man” and “Man bites dog” contain the same words in different orders. A causal mask restricts visibility, but it is not a complete position or distance representation. A positional mechanism makes comparisons depend on where tokens occur.</p>
+<p><strong>RoPE</strong>, rotary position embedding, rotates pairs of coordinates in Q and K according to position before their dot products are calculated. It normally leaves V unchanged. It does not enlarge the vectors, rotate the causal mask, or append a position token.</p>
+<pre class="math">For one coordinate pair at position t, angle θt:
+[a, b] → [a cos(θt) − b sin(θt),
+          a sin(θt) + b cos(θt)]
+
+Toy: [1, 0]
+Angle 0°  → [1, 0]
+Angle 90° → [0, 1]  (up to floating-point roundoff)
+
+Row-vector convention: q at position t becomes q Rtᵀ.
+With matching rotation schedules:
+(q Rtᵀ) · (k Rjᵀ) = q Rtᵀ Rj kᵀ
+The comparison can depend on relative displacement j − t.</pre>
+<p>The 90-degree rotation is a teaching choice, not a real Qwen angle. Real RoPE uses different rotation rates for coordinate pairs. The shape stays unchanged.</p>
+<h3>When identical inputs really do produce identical vectors</h3>
+<p>Same input plus the same deterministic projection gives the same output. In a RoPE-based model's first block, two occurrences of the same token can therefore have the same pre-RoPE Q/K/V for the same head, assuming identical other inputs. Q/K can then differ after position-dependent rotation. Even before considering that, different allowed context can give different attention outputs. Later blocks receive already contextualized states, so their projected Q/K/V can also differ.</p>
+<aside class="hint"><p><strong>What is shared?</strong> Positions share projection weights within a block. MHA heads use different weight groups. GQA additionally shares K/V groups among query heads. Blocks normally have different learned matrices. “Shared” never means all these activations must have equal values.</p></aside>
+</section>
+<section class="chapter" id="ch6">
+<p class="eyebrow">The transformer core · Process each row's gathered information</p>
+<h2>6. Feed-forward networks: computation within each token</h2>
+<p class="purpose">A feed-forward network transforms the features within each position's vector after attention has supplied context.</p>
+<h3>Process together does not mean mix together</h3>
+<p>The FFN may receive a whole tensor Z shaped [B, T, D], not only the row for “It”. It applies the same learned transformation independently to every row. Its output at “It” directly reads only its input row at “It”. That row can already contain information from earlier positions because attention gathered it.</p>
+<pre class="math">Attention: output at position t may depend on several allowed input rows.
+FFN:       output at position t directly depends on input row t.
+
+Whole sequence in the Qwen anchor:
+[1024 positions, 8192 components]
+→ [1024 positions, 29568 expanded components]
+→ [1024 positions, 8192 components]
+
+The position count stays 1024. The component width changes.</pre>
+<p>Calling the FFN “within each token” describes its information dependency, not a requirement to run a separate token loop. Many rows can be processed together by a matrix operation.</p>
+<h3>Expand, process, contract</h3>
+<p>A basic FFN projects the vector to another width, applies a nonlinear function, and projects back. A larger intermediate width offers more components in which to build useful features. The down projection combines those features into the main hidden width required by the rest of the block.</p>
+<pre class="math">Basic FFN, biases omitted:
+f(x) = activation(x Wupᵀ) Wdownᵀ
+
+Wup:   [F, D]     Wdown: [D, F]
+x:     [D]        expanded vector: [F]        output: [D]</pre>
+<p>Two linear projections without a nonlinear function can be combined into one linear projection. A nonlinear operation permits relationships that this single linear map cannot express. For the gated version below, the componentwise product is nonlinear too; removing SiLU alone would not make the entire gated network linear.</p>
+<h3>SwiGLU: learn both features and how they contribute</h3>
+<p>The Qwen2.5 anchor uses a gated FFN. Two learned projections receive the same normalized input. The up branch supplies expanded features. The gate branch passes through SiLU. Multiply the branch outputs component by component, then use the down projection.</p>
+<pre class="math">u = x Wupᵀ
+ g = x Wgateᵀ
+σ(g) = 1 / (1 + exp(−g))
+SiLU(g) = g × σ(g)             applied to each component
+z = u ⊙ SiLU(g)               ⊙ means componentwise multiplication
+f(x) = z Wdownᵀ
+
+Stored shapes:
+Wup: [F, D]   Wgate: [F, D]   Wdown: [D, F]</pre>
+<p>The gate is not a binary on/off switch. Its multiplier is not restricted to the range zero to one: SiLU can be negative or greater than one. It can reduce, amplify, or reverse a contribution.</p>
+<h3>A complete small SwiGLU calculation</h3>
+<p>This standalone toy uses D = 2 and F = 3. The input is already the vector entering the FFN. Biases are omitted. It is not a continuation of the Chapter 4 attention numbers.</p>
+<pre class="math">x = [1, 2]
+
+Wup   = [[1, 0],    Wgate = [[1,  0],    Wdown = [[1, 0, 1],
+         [0, 1],             [0, −1],             [0, 1, 1]]
+         [1, 1]]             [1,  0]]
+
+u = x Wupᵀ   = [1, 2, 3]
+g = x Wgateᵀ = [1, −2, 1]
+
+SiLU(g) ≈ [0.7311, −0.2384, 0.7311]
+z = u ⊙ SiLU(g)
+  ≈ [0.7311, −0.4768, 2.1932]
+
+f(x) = z Wdownᵀ
+     ≈ [0.7311 + 2.1932, −0.4768 + 2.1932]
+     ≈ [2.9242, 1.7164]</pre>
+<p>The calculation uses unrounded values internally. The three expanded features return to two main components. Nothing here reads another token row or chooses a next word.</p>
+<h3>How large are these learned matrices?</h3>
+<p>All three are learned parameter matrices. For the Qwen2.5-72B anchor, their orientations differ but their element counts are equal:</p>
+<div class="table-wrap"><table><thead><tr><th>Matrix</th><th>Stored shape [out, in]</th><th>Parameters in one block</th><th>Same matrix type across 80 blocks</th></tr></thead><tbody><tr><td>Wup</td><td>[29568, 8192]</td><td>242,221,056</td><td>19,377,684,480</td></tr><tr><td>Wgate</td><td>[29568, 8192]</td><td>242,221,056</td><td>19,377,684,480</td></tr><tr><td>Wdown</td><td>[8192, 29568]</td><td>242,221,056</td><td>19,377,684,480</td></tr><tr><td>All three</td><td>Three separate matrices per block</td><td>726,663,168</td><td>58,133,053,440</td></tr></tbody></table></div>
+<pre class="math">One projection: 8192 × 29568 = 242,221,056 parameters
+One FFN:        3 × 242,221,056 = 726,663,168
+All 80 FFNs:    80 × 726,663,168 = 58,133,053,440 ≈ 58.13B</pre>
+<aside class="caution"><p><strong>58.13B is not one block's FFN.</strong> Dividing that total by three gives the sum for one matrix type across all 80 blocks. Each block's individual Wup, Wgate, or Wdown has about 242.2 million parameters. More input rows reuse these matrices; they do not multiply the stored parameter count.</p></aside>
+<p>The FFN output enters the second residual addition before the next block. It does not directly produce “slept”. In an MoE model, a router and several expert FFNs replace the single dense FFN at selected places; that is a later chapter's different selection mechanism.</p>
+</section>
+<section class="chapter" id="ch7">
+<p class="eyebrow">The transformer core · Put the parts back together</p>
+<h2>7. The complete transformer block</h2>
+<p class="purpose">A transformer block keeps the same token positions while adding an attention update and a feed-forward update to their hidden states.</p>
+<h3>One block: two branches and two bypasses</h3>
+<p>In this pre-normalized dense design, normalization comes before each main branch. Let X contain all the block's input rows. Attention returns one update per row. The first addition produces U. A second normalization and the FFN produce another update. The second addition produces Y, which enters the next block.</p>
+<pre class="math">U = X + Attention(RMSNorm1(X))
+Y = U + FFN(RMSNorm2(U))
+
+X, U, Y all have shape [B, T, D].
+
+Input ──────────────────────────────┐
+  └→ RMSNorm1 → Attention → add X ←─┘
+                              ↓ U
+U ────────────────────────────────┐
+  └→ RMSNorm2 → FFN → add U ←─────┘
+                          ↓ Y → next block</pre>
+<p>The bypasses carry the <strong>unnormalized input to that branch</strong>. The first residual does not add a previous token's V or a previous block's V. At “It”, it adds the attention result for “It” to the input hidden state of that same position. The second adds the FFN result to U, before the second normalization.</p>
+<h3>Residual addition: keep the input and add an update</h3>
+<p>Residual paths let a branch modify an existing representation without recreating it from scratch. They also provide direct paths for training gradients through a deep stack. Addition is componentwise, not concatenation.</p>
+<pre class="math">Standalone illustration; branch outputs are assumed toy updates:
+x = [1, 2]
+Attention branch update = [0.5, −1]
+u = x + update = [1.5, 1]
+
+FFN branch update = [0.2, 0.3]
+y = u + update = [1.7, 1.3]</pre>
+<p>These stipulated updates show the additions only. They are not claimed results of a complete attention/FFN run. The two-component width and the identity of the position stay unchanged.</p>
+<h3>RMSNorm controls scale within each row</h3>
+<p>A row's numerical scale can change as updates accumulate. RMSNorm divides its components by their root-mean-square magnitude, then applies a learned scale vector. It acts over hidden components, independently at each position. It does not gather other positions, average the batch, select the last token, or generate text.</p>
+<pre class="math">For a row x with D components:
+rms(x) = √((Σc x_c²) / D + ε)
+RMSNorm(x)_c = γ_c × x_c / rms(x)
+
+γ: learned vector of D scale values
+ε: small positive constant for numerical stability
+
+Toy x = [3, 4], γ = [1, 1], ε omitted only for this calculation:
+rms(x) = √((9 + 16) / 2) = √12.5
+RMSNorm(x) ≈ [0.8485, 1.1314]</pre>
+<p>Unlike LayerNorm, RMSNorm does not subtract the mean. The Qwen2.5 anchor config uses an epsilon of 0.000001. The real branch calculation includes it; the toy leaves it out to expose the scale idea. Each normalization operation has its own learned scales.</p>
+<h3>The whole-model map, with attention in its proper place</h3>
+<figure data-asset="image.png"><img alt="Inside a decoder-only transformer: full pipeline, one block, and attention heads" decoding="async" loading="lazy" src="assets/diagram-03.png"/><figcaption>The supplied “Inside a decoder-only transformer” overview connects the whole model, one pre-normalized dense block, and two-head toy attention. It is explicitly not an exact Qwen configuration. The highlighted “It” is one receiving row, not the only row the model processes. Indices 0–5 should be read as sequence positions, not actual vocabulary IDs; word-level tokenization and punctuation are simplified. The overview omits positional encoding; Chapter 5 supplies that missing mechanism. Some drawn bypass connections are ambiguous: each residual addition has exactly two inputs, the bypassed state and the branch update.</figcaption></figure>
+<p>In this image, Panel A's Blocks 1, 2, and “More transformer blocks” form the stack. Stage #7 is <strong>final normalization</strong>, not the last block. Stage #8 is the <strong>vocabulary projection or LM head</strong>. Stage #9 is <strong>vocabulary softmax</strong>. The block's WO and an attention head are different from the LM head.</p>
+<p>“Decoder-only” names the architecture: the blocks use causal self-attention. It does not mean only the stages after the blocks. “Decoding” names the generation process; a “decoding rule” names how a token is selected.</p>
+<h3>Number impression: where the parameters actually sit</h3>
+<p>The Qwen2.5-72B anchor has 80 transformer blocks, commonly called 80 transformer layers. Each block normally has its own projection matrices. Those matrices are reused across all positions and across ordinary generation steps.</p>
+<div class="table-wrap"><table><thead><tr><th>Projection</th><th>Stored shape [out, in]</th><th>Parameters per block</th><th>Across 80 blocks, approximately</th></tr></thead><tbody><tr><td>WQ</td><td>[8192, 8192]</td><td>67,108,864</td><td>5.37B</td></tr><tr><td>WK</td><td>[1024, 8192]</td><td>8,388,608</td><td>0.67B</td></tr><tr><td>WV</td><td>[1024, 8192]</td><td>8,388,608</td><td>0.67B</td></tr><tr><td>WO</td><td>[8192, 8192]</td><td>67,108,864</td><td>5.37B</td></tr><tr><td>Wup, Wgate, Wdown combined</td><td>Three matrices as in Chapter 6</td><td>726,663,168</td><td>58.13B</td></tr></tbody></table></div>
+<pre class="math">Attention matrices per block:
+2 × (8192 × 8192) + 2 × (8192 × 1024)
+= 150,994,944
+
+All seven main projection matrices per block:
+150,994,944 + 726,663,168 = 877,658,112 ≈ 877.7M
+
+Across 80 blocks:
+80 × 877,658,112 = 70,212,648,960 ≈ 70.21B
+
+Vocabulary size = 152064
+Embedding table: 152064 × 8192 = 1,245,708,288 ≈ 1.25B
+Separate LM-head matrix: the same element count
+
+Block matrices + embedding + separate LM head
+= 72,704,065,536 ≈ 72.70B
+Add normalization scales and Q/K/V biases → about 72.71B total</pre>
+<p>The configuration specifies that input embeddings and the LM head are not tied, so they are separate parameter tables. The matrix subtotal omits normalization scales and attention projection biases. It is not an exact all-parameter audit. The model card reports 72.7B parameters, consistent with this rounded scale picture.</p>
+<aside class="keypoint"><p><strong>Why is WQ about 67 million?</strong> Each of its 8,192 output components has a weight for each of 8,192 input components: 8,192 × 8,192. This transforms hidden components into query components; it is not a mapping from input tokens to output words. FFNs account for roughly 80% of this model's full parameter count, using the rounded model scale—not just the attention projections.</p></aside>
+<h3>One stack processes all known rows</h3>
+<p>During prompt <strong>prefill</strong>, all supplied tokens are already known. Embedding lookup returns their rows. All those rows go through Block 1; its updated matrix goes to Block 2, and so on. Normalization processes each row. Attention produces an output for every row with its own allowed context. The FFN processes every row independently.</p>
+<pre class="math">Known sequence matrix
+→ Block 1: update all its rows
+→ Block 2: update all its rows
+→ …
+→ Block 80: update all its rows
+
+Within one block: positions can be computed together.
+Across blocks: the dependency remains sequential.</pre>
+<p>Knowing the tokens does not mean their contextual states are already known. Those states still have to be calculated. Parallel computation is possible because queries and source K/V at a block come from its available input rows. A receiving row does not wait for the newly updated attention output of an earlier row in that same block.</p>
+<h3>A two-row close-up makes the fixed mask visible</h3>
+<p>This separate toy uses one sequence [I, am], D = 2, one head, and identity Q/K/V projections. Normalization, RoPE, and the other block operations are omitted from the arithmetic, not from the actual architecture.</p>
+<pre class="math">X = [[1, 0],      rows:    I, am
+     [0, 1]]      columns: hidden components
+WQ = WK = WV = identity, so Q = K = V = X
+
+Scores = Q Kᵀ / √2
+       ≈ [[0.7071, 0],
+          [0, 0.7071]]
+
+Score-grid axes: query position × key position
+After the ONE fixed causal mask:
+[[0.7071, −∞],
+ [0,       0.7071]]
+
+Softmax across each row:
+A ≈ [[1,      0],
+     [0.3302, 0.6698]]
+
+O = A V
+  ≈ [[1,      0],
+     [0.3302, 0.6698]]</pre>
+<p>Both outputs can be computed together. The first row cannot read the second; the second can read both. The equal shapes of X and the score grid in this toy are accidental: X columns are components, but score-grid columns are source positions. Both resulting rows continue through WO, the first residual addition, normalization, the FFN, and the second residual addition, then enter the next block together.</p>
+<h3>Training uses several predictions; generation uses the last available one</h3>
+<p>The last-row highlight must not be mistaken for a last-row-only architecture. For a supplied chat-training example, prompt and answer occupy the same position axis:</p>
+<pre class="math">Illustrative sequence; real chat templates have their own markers:
+[how, are, you, ?, Assistant-start, I, am, fine, End]
+
+Every position has D components.
+Every processed position is handled by every query head.
+One sequence → ONE shared stack, not one model per target.</pre>
+<div class="table-wrap"><table><thead><tr><th>Prediction row</th><th>May read</th><th>Next-token target</th></tr></thead><tbody><tr><td>Assistant-start</td><td>Prompt and Assistant-start</td><td>I</td></tr><tr><td>I</td><td>Prompt, Assistant-start, I</td><td>am</td></tr><tr><td>am</td><td>Prompt, Assistant-start, I, am</td><td>fine</td></tr><tr><td>fine</td><td>Prompt, Assistant-start, I, am, fine</td><td>End</td></tr></tbody></table></div>
+<p>This is <strong>teacher forcing</strong>: correct previous tokens are supplied rather than sampled. The I row cannot read its future target “am”, even though that token is present elsewhere in the supplied sequence. The same final normalization and LM head can operate independently at every prediction row. They do not newly collect earlier-position vectors: attention already did that inside the stack.</p>
+<p>Training compares these predictions with known targets; it need not generate or sample answer tokens to calculate the supervised loss. Selected token losses are combined, their gradients contribute to the same shared weights, and an optimizer performs an update. There is no required update after each row, no mask rotation between rows, and no special set of weights saved for this sentence. In response-only SFT, prompt-target losses may be ignored while the prompt remains readable context. That <strong>loss mask</strong> is different from the causal attention mask. Chapters 9–10 develop the learning calculation.</p>
+<h3>Why ordinary generation becomes sequential after prefill</h3>
+<p>After the supplied prompt passes through all blocks, its last position's final vector predicts the first new token. If “slept” is selected, its ID selects a new embedding. That new position passes through all 80 blocks to predict what follows it. The model normally reuses previous K/V from each block's cache instead of running every old row through the stack again.</p>
+<p>Earlier rows cannot read the newly appended token, so their causal representations do not change just because the sequence grew. The next continuation token, however, is unknown until it is selected. That dependency makes ordinary autoregressive generation sequential. “Can compute known positions together” does not mean hardware computes every operation at exactly the same instant.</p>
+<div class="table-wrap"><table><thead><tr><th>Situation</th><th>New rows processed in a forward calculation</th><th>Where the context comes from</th></tr></thead><tbody><tr><td>Prompt prefill</td><td>Many known prompt rows, possibly chunked</td><td>Supplied prompt and allowed earlier positions</td></tr><tr><td>Teacher-forced training</td><td>Many known input rows</td><td>Supplied sequence, restricted by causal masking</td></tr><tr><td>Ordinary cached decode</td><td>Usually one newly supplied position per sequence</td><td>That row plus past K/V stored for each block</td></tr></tbody></table></div>
+<aside class="hint"><p><strong>Final normalization is not selection.</strong> Generation needs the last-position prediction. Implementations can normalize/project only that row or compute more rows before selecting it. Training commonly uses many rows. In either case, normalization changes scale; the vocabulary projection produces logits; softmax produces probabilities; the decoding rule selects a token. Neither attention nor the FFN alone “generates slept”. The last-position vector is a learned, context-dependent representation, not a concatenation or lossless copy of all earlier vectors. Earlier positions retain their own vectors.</p></aside>
+<h3>Sequence length, context window, and cache are different</h3>
+<div class="table-wrap"><table><thead><tr><th>Term</th><th>Meaning</th></tr></thead><tbody><tr><td>Sequence length</td><td>The current number of token positions in this sequence</td></tr><tr><td>Context window</td><td>The supported/configured maximum token span for a sequence</td></tr><tr><td>KV cache</td><td>Stored per-block K/V data that avoids recomputing past positions</td></tr><tr><td>Positions computed this call</td><td>The rows currently processed; possibly a prompt chunk or one new decode row</td></tr></tbody></table></div>
+<p>The 1,024-position diagrams do not specify a typical request length. Actual length depends on system instructions, conversation history, supplied documents, and generated text. Advertised “200K” or “1M” figures usually refer to a context window if labeled as context support, not a cache byte size; some releases separately state an output limit.</p>
+<pre class="math">Toy context window = 10 tokens
+Input length = 7
+After 1, 2, 3 generated tokens: lengths 8, 9, 10
+A fourth would make 11, beyond this toy limit.
+
+For a 32768-token window:
+30000 input tokens leave 32768 − 30000 = 2768 positions,
+subject to any separate output limit and the actual formatted input size.</pre>
+<p>Input and generated continuation generally share the window, including chat-template and system tokens. If the supported span would be exceeded, the system must stop, discard or summarize earlier context, or use a supported larger-window setup. The original tokens do not become free space merely because K/V were cached.</p>
+<p>For this specific older Qwen anchor, its configuration sets <code>max_position_embeddings = 32768</code>. Its model card describes support up to 131,072 with documented long-context settings and lists generation up to 8,192. Those statements are not a promise that every deployment provides the larger limit. Read the model and runtime settings together.</p>
+<aside class="caution"><p><strong>A window limit is not a physical “all at once” promise.</strong> A logical full-sequence forward pass still contains many operations and sequential blocks. A runtime may split prompt prefill into chunks for memory or scheduling. One-token decoding can read many cached source positions while calculating only one new query position. Chapter 14 explains that runtime organization.</p></aside>
+<p class="source-note">Scale and limits: <a href="https://huggingface.co/Qwen/Qwen2.5-72B-Instruct/raw/main/config.json">official model configuration</a> and <a href="https://huggingface.co/Qwen/Qwen2.5-72B-Instruct">official model card, including long-text deployment guidance</a>. These chapters use its geometry as a historical teaching anchor; they do not claim measured Qwen activations or current-family architecture equivalence.</p>
+</section>
+<section class="chapter" id="ch8">
+<p class="eyebrow">The transformer core · From vectors to words</p>
+<h2>8. From hidden states to generated text</h2>
+<p>A transformer produces numbers, not words. The output stages turn the last available position’s hidden state into scores for possible next tokens. A separate selection rule chooses a token, and the model repeats the process.</p>
+<h3>Where did the earlier context go?</h3>
+<p>It was gathered <strong>inside attention in the transformer blocks</strong>. For the illustrative prefix “The cat was tired. It”, attention at “It” mixes information from permitted positions. Residual connections and feed-forward networks update that position’s vector. Later blocks repeat this process. The earlier positions still have their own vectors; they have not been deleted or concatenated into one giant vector.</p>
+<p>The final vector at “It” is a learned representation influenced by the prefix—not a lossless copy of it. The output head uses that representation to predict what comes next.</p>
+<div class="table-wrap"><table><thead><tr><th>Stage in the supplied diagrams</th><th>Purpose</th><th>Does it gather earlier positions again?</th></tr></thead><tbody>
+<tr><td>#7: final normalization</td><td>Adjust the numerical scale of each hidden vector.</td><td>No.</td></tr>
+<tr><td>#8: LM head</td><td>Use a learned matrix to produce one logit per vocabulary token.</td><td>No.</td></tr>
+<tr><td>#9: vocabulary softmax</td><td>Convert logits to next-token probabilities.</td><td>No.</td></tr>
+<tr><td>Token selection</td><td>Choose a token using greedy decoding or sampling.</td><td>No.</td></tr>
+</tbody></table></div>
+<aside class="keypoint"><strong>Keep these names separate.</strong> #7 is not the last transformer block, and normalization is not “select the last row”. The LM head is the output projection after the stack. A <em>decoder-only transformer</em> includes the causal block stack; <em>decoding</em> is the process of generating tokens.</aside>
+<h3>Tiny worked example: one vector, three candidates</h3>
+<p>This is an independent toy calculation, not a measured prediction for the sentence. Use row activations and stored weight matrices shaped [output components, input components]. The toy vocabulary contains only “slept”, “ran”, and a period.</p>
+<pre class="math">Final hidden state h = [2, 2]
+Toy RMSNorm: scale γ = [1, 1]; epsilon omitted
+RMS(h) = sqrt((2² + 2²) / 2) = 2
+z = γ ⊙ h / RMS(h) = [1, 1]
+
+LM-head rows:
+W = [[ 2, 0],    ← slept
+     [ 0, 1],    ← ran
+     [-1, 1]]    ← period
+logits = zWᵀ = [2, 1, 0]
+
+p(i) = exp(logit(i)) / Σⱼ exp(logit(j))
+p ≈ [0.6652, 0.2447, 0.0900]</pre>
+<p>The head computes scores; it does not look up the “meaning” of the vector in a dictionary. Training made its numerical transformation useful for prediction. The vocabulary matrix may share weights with the input embedding table, depending on the model.</p>
+<figure data-asset="From Context to the Next Token.png"><img alt="From Context to the Next Token" decoding="async" loading="lazy" src="assets/diagram-04.png"/><figcaption>Context is gathered inside the blocks; the final stages score the next token. The word-like boxes simplify tokenization and omit punctuation. Only one position’s attention is enlarged; all positions still pass through the shared stack. Internal norms, multiple heads, and the feed-forward residual are abbreviated. The right-hand arithmetic is an independent toy example using RMSNorm without epsilon, not a universal model trace. Stage labels #7–#9 are diagram labels, not layer numbers.</figcaption></figure>
+<h3>Selection: highest score or a controlled random choice?</h3>
+<div class="table-wrap"><table><thead><tr><th>Rule</th><th>What happens</th></tr></thead><tbody>
+<tr><td>Greedy</td><td>Choose the highest logit: “slept” in this example.</td></tr>
+<tr><td>Sampling</td><td>Draw from the distribution. “Ran” can be selected even though its probability is lower.</td></tr>
+<tr><td>Temperature</td><td>Divide logits by a positive temperature before softmax. A lower temperature concentrates probability on higher scores.</td></tr>
+<tr><td>Top-k / top-p sampling</td><td>Limit eligible vocabulary candidates, then renormalize and sample. These are decoding controls, not MoE routing.</td></tr>
+</tbody></table></div>
+<pre class="math">Toy temperature comparison:
+T = 1.0: softmax([2, 1, 0]) ≈ [66.5%, 24.5%, 9.0%]
+T = 0.5: softmax([4, 2, 0]) ≈ [86.7%, 11.7%, 1.6%]</pre>
+<p>A positive temperature changes sampling probabilities, but not their ranking, so it does not change ordinary greedy selection. Some APIs use temperature zero as shorthand for greedy decoding; literal division by zero is not the calculation.</p>
+<h3>The generation loop</h3>
+<ol><li>Process the known prompt through the stack: <strong>prefill</strong>.</li><li>Use its last-position prediction to choose the first new token.</li><li>Append that token, embed it, and process it through every block using earlier cached keys and values.</li><li>Use this new last position to predict the following token. Stop at an ending token or a configured limit.</li></ol>
+<aside class="hint"><strong>Policy versus selection.</strong> In LLM reinforcement learning, the policy usually means the model’s conditional next-token distribution. The decoding rule chooses from it and can modify the actual sampling distribution. Ordinary generation keeps trained weights fixed; it does not perform an optimizer update after each word.</aside>
+</section>
+<section class="chapter" id="ch9">
+<p class="eyebrow">How models learn · Predictions become shared-weight updates</p>
+<h2>9. Training and gradients</h2>
+<p>Training changes learned parameters so observed target tokens become more likely. A forward pass calculates predictions and loss. Backpropagation calculates gradients. An optimizer uses those gradients to update the selected parameters.</p>
+<h3>One sequence, many position vectors, one model</h3>
+<p>“I am” is one sequence with two token positions, not two sub-sequences. After embedding, each position has its own hidden vector. Stack the vectors into rows; this adds a position axis, not extra components to either vector.</p>
+<pre class="math">Toy embeddings, assuming one token per word:
+X = [[1, 0],    ← I
+     [0, 1]]    ← am
+Unbatched shape: [positions, components] = [2, 2]
+Batched shape:   [sequences, positions, components] = [1, 2, 2]
+
+ONE shared path:
+X → Block 1 → Block 2 → … → Last block
+  → row-wise final norm → shared LM head → row-wise probabilities</pre>
+<p>Every block receives the whole position matrix. Parameters are shared across positions <em>within</em> a layer; different layers normally have different parameters. Attention exchanges information across allowed rows. Standard normalization and the FFN act on each row separately.</p>
+<figure data-asset="One Sequence, Two Vectors, One Model.png"><img alt="One Sequence, Two Vectors, One Model" decoding="async" loading="lazy" src="assets/diagram-05.png"/><figcaption>Two token-position hidden states move through one shared stack; they are not positional-encoding vectors or separate models. The two-component embeddings and output probabilities are illustrative, not a connected numerical execution. Positional information is omitted, and real tokenization may differ. The residual-stream width stays fixed, while internal attention and FFN tensors may have different widths.</figcaption></figure>
+<h3>A fixed causal mask—not four rotating passes</h3>
+<p>Each attention head calculates a query, key, and value for every supplied position. Heads are not divided between tokens: if a layer has nine query heads, each position uses all nine. The previous block’s input rows already exist, so the attention output at “am” need not wait for this block’s newly computed output at “I”. It reads keys and values projected from the <em>input</em> rows.</p>
+<pre class="math">Tiny attention close-up only; normalization omitted:
+X = [[1, 0], [0, 1]]
+WQ = WK = WV = identity; one head, head width = 2
+QKᵀ / sqrt(2) ≈ [[0.7071, 0],
+                  [0,      0.7071]]
+After the fixed causal mask:
+                  [[0.7071, -∞],
+                   [0,       0.7071]]
+Row-wise softmax ≈ [[1,      0],
+                   [0.3302, 0.6698]]
+Weighted V outputs ≈ [[1,      0],
+                      [0.3302, 0.6698]]</pre>
+<p>Hidden-state columns above mean vector components. Attention-score columns mean source positions. Their sizes happen to match here, but their meanings do not. Positions <em>can</em> be calculated together; hardware may tile or chunk the work. Blocks still run in order.</p>
+<h3>Teacher forcing: how a whole answer is trained</h3>
+<p>Take the prompt “How are you?” and the supplied answer “I am fine”. Use illustrative word tokens plus assistant-start and response-ending markers. Real chat templates may use several special tokens.</p>
+<pre class="math">Supplied training sequence:
+[prompt tokens, Assistant-start, I, am, fine, End]
+
+Each prediction uses the current position to predict the next one:
+Assistant-start → I
+I               → am
+am              → fine
+fine            → End</pre>
+<p><strong>Teacher forcing</strong> supplies the correct earlier tokens instead of the model’s sampled earlier predictions. The known answer allows many predictions in one shared forward computation. At “I”, the causal mask blocks its target “am”, even though “am” exists elsewhere in the supplied sequence. No token sampling is required to calculate supervised loss.</p>
+<div class="table-wrap"><table><thead><tr><th>Prediction row</th><th>May read</th><th>Must not read</th><th>Response-only loss target</th></tr></thead><tbody>
+<tr><td>Assistant-start</td><td>Prompt and Assistant-start</td><td>I and later positions</td><td>I</td></tr>
+<tr><td>I</td><td>Prompt, Assistant-start, I</td><td>am and later positions</td><td>am</td></tr>
+<tr><td>am</td><td>Prompt, Assistant-start, I, am</td><td>fine and later positions</td><td>fine</td></tr>
+<tr><td>fine</td><td>All preceding positions and fine</td><td>End</td><td>End</td></tr>
+</tbody></table></div>
+<aside class="keypoint"><strong>Causal masking and loss masking solve different problems.</strong> The causal mask controls what attention may read. The loss mask controls which next-token targets contribute to the objective. Response-only SFT can ignore prompt-target losses while still using the prompt as context. Its prompt representations can still receive gradients through the answer computation.</aside>
+<h3>Loss: how much probability did the target receive?</h3>
+<p>For a known target, cross-entropy is the negative log of its probability. “Correct” means the dataset target, not the only possible valid continuation. Below is a toy mean over the four response targets.</p>
+<pre class="math">Target probabilities: [0.7, 0.8, 0.5, 0.9]
+Position losses = -ln(p_target)
+                ≈ [0.3567, 0.2231, 0.6931, 0.1054]
+Mean response loss ≈ 0.3446 nats
+
+General masked token mean:
+L = Σₜ mₜ[-ln pₜ(targetₜ)] / Σₜ mₜ
+mₜ = 1 for included targets; 0 for excluded targets</pre>
+<p>Other reduction conventions exist, such as a mean per sequence. Changing the denominator changes the relative weighting of examples. Implementations often calculate a stable cross-entropy directly from logits rather than storing explicit probabilities.</p>
+<h3>Tiny numerical update: two weights in the output head</h3>
+<p>Freeze the normalized input to the toy head at <strong>[2, 1]</strong>. Train only its row for “slept”; hold the competing “ran” logit at zero. These two candidates are the entire toy vocabulary.</p>
+<pre class="math">x = [2, 1]; w = [0.30, 0.40]
+logit(slept) = xwᵀ = 2(0.30) + 1(0.40) = 1
+logit(ran) = 0
+p(slept) ≈ 0.7311; L = -ln p(slept) ≈ 0.3133
+
+Loss-to-logit gradient: ∂L/∂logit(slept) = p(slept) - 1 ≈ -0.2689
+Parameter gradient:    ∂L/∂w = (p(slept) - 1)x
+                            ≈ [-0.5379, -0.2689]
+Plain SGD, learning rate η = 0.10:
+w_new = w - η ∂L/∂w ≈ [0.3538, 0.4269]
+
+Recompute with the same fixed x:
+new logit ≈ 1.1345
+new p(slept) ≈ 0.7567; new loss ≈ 0.2788</pre>
+<p>A gradient measures local sensitivity: how a small change would affect loss. It is not a new weight. The competing logit has a nonzero loss derivative too, but no trainable parameter in this toy baseline. The SGD update improves this example; it is not a guarantee about every example or held-out data.</p>
+<figure data-asset="How a Model Learns_ One Training Step.png"><img alt="How a Model Learns_ One Training Step" decoding="async" loading="lazy" src="assets/diagram-06.png"/><figcaption>A fixed-input, two-weight teaching model isolates forward, backward, and an SGD update. “Slept” is the supplied target, not the only valid continuation. This is not a full transformer, its probabilities cover only two candidates, and its update rule is not AdamW. The repeat-forward check uses the same example, so it does not measure generalization.</figcaption></figure>
+<h3>Two losses, one shared gradient, one optimizer step</h3>
+<p>Now isolate a different toy head with one scalar weight. The position at “I” predicts “am”; the position at “am” predicts “fine”. Both predictions use the same old weight. Their hidden values are made up and fixed, not outputs of the earlier attention calculation.</p>
+<pre class="math">w = 0.50; logit(am) = 0; logit(fine) = w h
+At I:  h = -1; target = am
+  p(am) ≈ 0.6225; L₁ ≈ 0.4741; ∂L₁/∂w ≈ -0.3775
+At am: h =  2; target = fine
+  p(fine) ≈ 0.7311; L₂ ≈ 0.3133; ∂L₂/∂w ≈ -0.5379
+
+Mean loss = (L₁ + L₂) / 2 ≈ 0.3937
+Shared gradient = (∂L₁/∂w + ∂L₂/∂w) / 2 ≈ -0.4577
+ONE SGD update: w_new = 0.50 - 0.10(-0.4577) ≈ 0.5458
+Next check: p(am at I) ≈ 0.6332; p(fine at am) ≈ 0.7487</pre>
+<figure data-asset="Shared Weight Update Infographic.png"><img alt="Shared Weight Update Infographic" decoding="async" loading="lazy" src="assets/diagram-07.png"/><figcaption>Two position losses contribute to one shared scalar’s update. Fixed hidden states and a two-token vocabulary simplify the calculation. Averaging gradients follows from averaging losses; a summed loss would have a different scale. “Do not update separately” refers to this joint step: sequential per-example updates are a different procedure. Both positions improve here; their contributions can conflict in other examples.</figcaption></figure>
+<p>No sentence-specific weight is saved. The updated parameters remain shared and are reused for future inputs. A real step often aggregates many positions across many sequences. Gradient accumulation can combine several microbatches before a single optimizer step, provided their loss weighting is handled consistently.</p>
+<h3>Where does backward happen in the full model?</h3>
+<div class="table-wrap"><table><thead><tr><th>Operation</th><th>Uses learned parameters?</th><th>Backward role</th></tr></thead><tbody>
+<tr><td>Embedding lookup</td><td>Yes: embedding table</td><td>Accumulate gradients into selected embedding rows when trainable; token IDs stay discrete.</td></tr>
+<tr><td>Attention / FFN / normalization</td><td>Yes: their matrices and learned scales</td><td>Produce parameter gradients and pass activation gradients upstream.</td></tr>
+<tr><td>Residual addition</td><td>No parameters of its own</td><td>Send gradients through both incoming branches.</td></tr>
+<tr><td>LM head</td><td>Yes: vocabulary matrix</td><td>Differentiate both its weights and its input hidden states.</td></tr>
+<tr><td>Softmax / cross-entropy</td><td>No ordinary learned parameters</td><td>Convert prediction mismatch into logit gradients.</td></tr>
+</tbody></table></div>
+<pre class="math">For a row hidden vector x and logits z = xWᵀ:
+∂L/∂z = p - y            (y is the one-hot target row)
+∂L/∂x = (p - y)W         (continues into earlier operations)
+∂L/∂W = (p - y)ᵀx       (accumulates across uses of W)</pre>
+<figure data-asset="Inside a Transformer Training Pipeline.png"><img alt="Inside a Transformer Training Pipeline" decoding="async" loading="lazy" src="assets/diagram-08.png"/><figcaption>The same architecture carries forward activations and reverse gradients; the optimizer sits outside it. The inset abbreviates block normalization and assumes a gated FFN. Important placement clarification: interpret the sidebar’s x = [2, 1] as the fixed vector <em>entering the LM head after final normalization</em>, not as the pre-normalization vector suggested by its main-panel label. Separate embedding/head boxes may represent tied weights in some models. Parameter-free operations still carry gradients; only selected trainable parameters are updated.</figcaption></figure>
+<aside class="hint"><strong>Backpropagation is not weight updating.</strong> Weights remain unchanged while this step’s predictions and gradients are calculated. SGD uses the displayed simple rule. AdamW additionally uses gradient-history estimates, squared-gradient estimates, and decoupled weight decay. The optimizer changes parameters; later forward passes recompute activations from them.</aside>
+</section>
+<section class="chapter" id="ch10">
+<p class="eyebrow">How models learn · Training signal and trainable weights</p>
+<h2>10. Pretraining, instruction tuning, and reasoning training</h2>
+<p>The architecture determines how a model computes. Training determines what those computations become useful for. Two models can share an architecture and still behave differently because they learned from different data and objectives.</p>
+<h3>What supplies the learning signal?</h3>
+<div class="table-wrap"><table><thead><tr><th>Training approach</th><th>Purpose</th><th>Mechanism</th></tr></thead><tbody>
+<tr><td>Causal-LM pretraining</td><td>Learn broad language patterns and useful skills from varied data.</td><td>Known sequences supply shifted next-token targets, commonly across most eligible positions.</td></tr>
+<tr><td>Supervised fine-tuning (SFT)</td><td>Learn desired responses, instruction following, style, or worked solutions.</td><td>Prompt–response examples supply next-token targets; response-only loss is common, not mandatory.</td></tr>
+<tr><td>Reinforcement learning (RL)</td><td>Make rewarded generated behavior more likely.</td><td>Generate responses, evaluate them, then calculate an algorithm-specific objective from rewards and token probabilities.</td></tr>
+<tr><td>Reasoning training</td><td>Improve problem-solving behavior.</td><td>A goal served by worked-solution SFT, RL on checkable tasks, or a combination—not a new block type.</td></tr>
+</tbody></table></div>
+<p>Pretraining and SFT both commonly use next-token cross-entropy. SFT does not predict a whole answer as one object. Chapter 9’s teacher-forced “I am fine” answer still supplies multiple next-token targets. SFT and RL are commonly post-training stages, but these are customary uses, not hard mathematical boundaries. Pretraining can also teach coding, mathematics, and conversation.</p>
+<h3>A tiny reward example—not a complete RL recipe</h3>
+<p>Suppose two sampled solutions receive verifier rewards 1 and 0. Subtract the group mean to obtain simple centered learning signals. This toy omits normalization, clipping, reference penalties, and other algorithm-specific details.</p>
+<pre class="math">Toy rewards:              [1, 0]
+Mean reward:               0.5
+Centered signals A:        [+0.5, -0.5]
+Simplified score-function loss: L = -Σᵢ Aᵢ log πθ(responseᵢ | prompt)
+∂L/∂log πθ(response₁) = -0.5  → descent favors higher probability
+∂L/∂log πθ(response₂) = +0.5  → descent favors lower probability</pre>
+<p>A real response log-probability is built from its conditional token probabilities. The sampled tokens and rewards are treated as data for the policy update; ordinary backpropagation does not run through discrete sampling or a verifier. Rewards can represent preference or quality, not only binary correctness. Decoding controls must be accounted for when identifying the actual behavior distribution.</p>
+<aside class="caution"><strong>A reward is not a proof.</strong> A model may exploit an imperfect evaluator. A rewarded answer can be wrong, and a long reasoning trace is not automatically a reliable explanation of how the model reached its answer.</aside>
+<h3>Which weights change? An independent choice</h3>
+<div class="table-wrap"><table><thead><tr><th></th><th>Full-weight fine-tuning</th><th>LoRA adaptation</th></tr></thead><tbody>
+<tr><td>SFT objective</td><td>Update existing model weights from target-answer losses.</td><td>Freeze the base and train selected low-rank branches from target-answer losses.</td></tr>
+<tr><td>RL objective</td><td>Update existing model weights from reward-based objectives.</td><td>Freeze the base and train selected low-rank branches from reward-based objectives.</td></tr>
+</tbody></table></div>
+<aside class="keypoint"><strong>LoRA is not an alternative to SFT.</strong> SFT/RL describe the learning signal. Full-weight/LoRA describe the trainable parameters. Dense/MoE describes architecture. These choices can be combined.</aside>
+<h3>LoRA: a correction beside an existing matrix</h3>
+<p>LoRA does not normally add transformer blocks. It adds two small learned factors beside a selected linear projection. In a query projection, both branches receive the normalized input hidden vector, and their outputs are added before head reshaping, positional processing, and query–key matching.</p>
+<pre class="math">Row-vector convention:
+W: [d_out, d_in]          frozen base matrix
+A: [r, d_in]             trainable narrow projection
+B: [d_out, r]            trainable expansion
+q = xWᵀ + s(xAᵀ)Bᵀ
+Common scaling: s = α/r; other scaling conventions exist
+Adapter parameter count = r(d_in + d_out)
+rank(BA) ≤ r             (the correction is low-rank, not necessarily W + sBA)</pre>
+<p>LoRA on WQ changes the query before matching with keys. LoRA on WV changes the information later mixed by attention. Configuration selects layers, projection types, and rank; validation and memory budget guide the choice. Blocks 1, 5, and 7 are possible placements, not uniquely good ones. Each selected projection usually has its own factors, shared across its token positions.</p>
+<h3>Historical numerical anchor: Qwen2.5-72B</h3>
+<p>The supplied figure uses the earlier Qwen2.5-72B query matrix, not the latest Qwen architecture. Each of its query-output components has a weight for every input component. This is a hidden-vector-to-query-vector projection, not a token-to-token matrix. More sequence positions reuse it; they do not enlarge it.</p>
+<pre class="math">One WQ: 8,192 × 8,192 = 67,108,864 weights
+Rank r = 16:
+A: 16 × 8,192 = 131,072
+B: 8,192 × 16 = 131,072
+Total adapter = 262,144 = 0.390625% of this WQ matrix
+WQ adapters in three blocks = 786,432
+WQ adapters in all 80 blocks = 20,971,520</pre>
+<p>These counts cover only the named factors. They exclude other targets, gradients, optimizer state, and activations. The frozen base still needs storage and computation. Query projections are not universally square, and GQA key/value matrices can have narrower output widths.</p>
+<figure data-asset="LoRA Inside Transformer Blocks_ A Visual Guide.png"><img alt="LoRA Inside Transformer Blocks_ A Visual Guide" decoding="async" loading="lazy" src="assets/diagram-09.png"/><figcaption>Adapters modify selected projections inside existing blocks; the pictured WQ locations are an illustrative configuration. Its parameter scale is the historical Qwen2.5-72B anchor, not a current-family default. Query-head layout, rotary processing, score scaling, and output projection are abbreviated. Red backward arrows mean required activation gradients, not gradients for integer token IDs or an update to every frozen weight. The initial-gradient qualification immediately below is essential: two trainable factors do not imply two nonzero loss gradients on the first pass.</figcaption></figure>
+<h3>Why “zero-initialized LoRA” does not mean both factors are zero</h3>
+<p>A common initialization uses random A and zero B. The product BA is zero, so the initial adapter leaves the base projection unchanged. But the first backward pass treats the factors differently.</p>
+<pre class="math">For q = xWᵀ + s(xAᵀ)Bᵀ and row g = ∂L/∂q:
+∂L/∂B = s gᵀ(xAᵀ)
+∂L/∂A = s (gB)ᵀx
+
+At B = 0, A random:
+BA = 0; ∂L/∂A = 0
+∂L/∂B can be nonzero if g and xAᵀ provide a signal
+
+Toy scalar-output branch, s = 1:
+x = [1, 2]; A = [0.1, 0.2]; B = [0]; g = [3]
+xAᵀ = 0.5; adapter output = 0
+∂L/∂B = 1.5; ∂L/∂A = [0, 0]</pre>
+<p>After B changes, A can receive loss gradients too. If A is zero and B is nonzero, the roles reverse. If both factors start at zero, both loss gradients are zero and this ordinary bilinear branch cannot start learning. A zero loss gradient also does not universally mean no parameter change: configured weight decay or existing optimizer state can matter.</p>
+<aside class="hint"><strong>Frozen weights still pass gradients.</strong> For y = xWᵀ with frozen W, the row input gradient is (∂L/∂y)W. It can carry the learning signal to earlier adapters even though W is not updated. Frozen means fixed parameters, not fixed activations. A frozen prefix before the earliest trainable operation may not require gradient tracking.</aside>
+<p class="source-note">Historical shape reference: <a href="https://huggingface.co/Qwen/Qwen2.5-72B-Instruct/blob/main/config.json">Qwen2.5-72B-Instruct configuration</a>. Its dimensions are retained as a teaching anchor; do not substitute them for another variant’s configuration.</p>
+</section>
+<section class="chapter" id="ch11">
+<p class="eyebrow">Dense and MoE architectures · The common-network baseline</p>
+<h2>11. Dense transformers</h2>
+<p>A dense transformer uses the same feed-forward network for every position in a given block. It does not use the input to select a small subset from a bank of feed-forward experts. The transformer studied so far is already a dense model.</p>
+<h3>Same functions, different results</h3>
+<p>Block 5’s attention projections and FFN occupy fixed places in the model. A token’s numerical values do not choose another WQ. Instead, different hidden inputs produce different Q/K/V, attention weights, and FFN outputs through the same learned functions.</p>
+<div class="table-wrap"><table><thead><tr><th>Choice</th><th>What it controls</th><th>Compatible with a dense model?</th></tr></thead><tbody>
+<tr><td>Causal attention</td><td>Which positions may be read.</td><td>Yes.</td></tr>
+<tr><td>GQA</td><td>How query heads share key/value heads.</td><td>Yes.</td></tr>
+<tr><td>KV cache</td><td>Reuse of computed earlier keys and values.</td><td>Yes.</td></tr>
+<tr><td>LoRA</td><td>Which adaptation parameters are trained.</td><td>Yes.</td></tr>
+<tr><td>Dense versus routed MoE</td><td>Common FFN versus input-selected expert FFNs.</td><td>This is the distinction being defined.</td></tr>
+</tbody></table></div>
+<aside class="keypoint"><strong>Dense does not mean unmasked.</strong> A dense causal model still blocks future positions. It also does not literally read every stored weight for each token: an embedding lookup selects a vocabulary row.</aside>
+<h3>Tiny parameter budget</h3>
+<p>Use a toy block with hidden width 4 and a gated FFN intermediate width 8. Count matrix elements, omitting biases and normalization scales. For toy attention, choose two query heads of width 2 and one shared KV head of width 2.</p>
+<pre class="math">Gated FFN:
+W_gate: [8, 4]; W_up: [8, 4]; W_down: [4, 8]
+FFN weights = 3 × 4 × 8 = 96
+
+Attention projections:
+WQ: [4, 4] → 16
+WK: [2, 4] →  8
+WV: [2, 4] →  8
+WO: [4, 4] → 16
+Attention projection weights = 48
+Toy block matrix total = 96 + 48 = 144</pre>
+<p>Increasing the prompt from two positions to six leaves these parameter counts unchanged. It creates more activations and more work. Adding another block normally adds a different set of weights. The embedding table and LM head also contribute to model storage, so counting one block is not counting the whole model.</p>
+<h3>Historical scale: why 67 million was not the FFN</h3>
+<pre class="math">Historical Qwen2.5-72B anchor, one block:
+WQ = 8,192 × 8,192 = 67,108,864 matrix weights
+Gated FFN = 3 × 8,192 × 29,568 = 726,663,168 matrix weights</pre>
+<p>The first figure counts a query projection <em>inside attention</em>. The second counts gate, up, and down projections <em>inside the FFN</em>. MoE usually replaces the second component, not the first.</p>
+<h3>Where the cost goes</h3>
+<div class="table-wrap"><table><thead><tr><th>Resource</th><th>What grows it</th><th>Practical effect</th></tr></thead><tbody>
+<tr><td>Parameter storage</td><td>More blocks, wider projections, larger vocabulary, precision.</td><td>Weights must fit somewhere regardless of prompt length.</td></tr>
+<tr><td>FFN/projection work</td><td>More processed positions and larger matrices.</td><td>Dense matrices are repeatedly evaluated and can benefit from batching.</td></tr>
+<tr><td>Full-attention work</td><td>More query–key pairs.</td><td>Long supplied sequences have quadratic pairwise work; cached single-token attention scans its visible context.</td></tr>
+<tr><td>Runtime state</td><td>Batch size, sequence length, hidden width, cached heads.</td><td>Activations and caches are separate from learned parameters.</td></tr>
+<tr><td>Training state</td><td>Trainable parameters, optimizer, saved backward activations.</td><td>Full-weight training needs much more than inference weight storage alone.</td></tr>
+</tbody></table></div>
+<aside class="hint"><strong>Counts are not benchmark results.</strong> Parameter count helps explain capacity and storage. FLOPs estimate arithmetic; latency measures response delay; throughput measures work per second. None can be substituted for the others.</aside>
+</section>
+<section class="chapter" id="ch12">
+<p class="eyebrow">Dense and MoE architectures · More stored capacity, selected computation</p>
+<h2>12. Mixture-of-experts from first principles</h2>
+<p>Mixture-of-experts (MoE) stores several feed-forward networks, then sends each position to a selected few. The aim is to increase learned capacity without evaluating the whole expert bank for every position.</p>
+<h3>An expert is usually an FFN, not a whole transformer</h3>
+<pre class="math">Typical dense block:
+attention → residual → norm → common FFN → residual
+Typical routed-MoE block:
+attention → residual → norm → router + selected FFNs → combine → residual</pre>
+<p>Each expert owns its own matrices. A router scores experts using the position’s current contextual hidden state. Top-k selects the k highest-scoring expert IDs. The model configuration sets k; it does not mean the k previous tokens or k attention heads.</p>
+<h3>Tiny worked router: calculate top-2</h3>
+<pre class="math">Toy row input x = [1, 2]
+Router matrix R has one row per expert:
+E1: [1, 0] → score 1
+E2: [1, 1] → score 3
+E3: [0, 0] → score 0
+E4: [0, 1] → score 2
+Scores = xRᵀ = [1, 3, 0, 2]
+Top-2 selects E2 and E4.
+
+One illustrative weight rule:
+softmax over selected scores [3, 2] ≈ [0.7311, 0.2689]
+y = 0.7311 E2(x) + 0.2689 E4(x)</pre>
+<p>The router scores experts without running all their large FFNs. Its scores are scalars used for selection; E2(x) is a full expert output vector, not the score 3. Score functions, selection adjustments, and selected-weight normalization vary by architecture.</p>
+<h3>The selected experts receive the same full vector</h3>
+<p>Do not split the hidden components between experts. Each selected expert processes the same position’s input independently. Combine their same-width output vectors with a weighted sum, not concatenation.</p>
+<pre class="math">Independent toy combine example, not derived from the router above:
+Expert A output = [2, 0]; Expert B output = [0, 4]
+Routing weights = [0.75, 0.25]
+MoE branch = 0.75[2, 0] + 0.25[0, 4] = [1.5, 1]
+Block output then adds this branch to its residual stream.</pre>
+<figure data-asset="Dense vs. MoE Transformer Block Infographic.png"><img alt="Dense vs. MoE Transformer Block Infographic" decoding="async" loading="lazy" src="assets/diagram-10.png"/><figcaption>The left uses the historical dense Qwen2.5-72B FFN; the right is a deliberately invented eight-expert, top-2 design, <em>not an actual Qwen configuration</em>. Experts replace the FFN sublayer, not whole blocks. Counts include the named FFN/expert matrices only. WO belongs to attention and differs from FFN down projection and the LM head. Top-2 normalization is illustrative; shared experts and capacity controls are omitted. The schematic also omits the softmax between LM-head logits and probabilities. This is not a speed or quality comparison.</figcaption></figure>
+<h3>Stored versus selected parameters</h3>
+<p>For a bias-free gated expert with hidden width d and intermediate width f, gate, up, and down matrices together have three times d times f weights. The supplied comparison chooses narrower experts; its arithmetic follows from that choice.</p>
+<pre class="math">Historical dense reference:
+d = 8,192; f_dense = 29,568
+One dense FFN = 3 × 8,192 × 29,568 = 726,663,168
+
+Illustrative MoE, NOT a Qwen configuration:
+8 routed experts; top-2; f_expert = 4,096
+One expert = 3 × 8,192 × 4,096 = 100,663,296
+Stored expert bank = 8 × 100,663,296 = 805,306,368
+Selected expert matrices per position = 2 × 100,663,296 = 201,326,592
+Simple router = 8 × 8,192 = 65,536 (bias omitted)</pre>
+<div class="table-wrap"><table><thead><tr><th>Count</th><th>What it tells you</th><th>What it does not tell you</th></tr></thead><tbody>
+<tr><td>Stored expert bank</td><td>All routed expert weights that must be stored.</td><td>Work done for one position.</td></tr>
+<tr><td>Selected experts per position</td><td>Weights of the expert FFNs evaluated for this position.</td><td>Total active model parameters, exact memory traffic, or latency.</td></tr>
+<tr><td>Total model parameters</td><td>Expert banks plus attention, embeddings, norms, router, and other modules.</td><td>Every token evaluates every stored expert.</td></tr>
+</tbody></table></div>
+<p>Different positions can select different experts. Top-2 for each position does not mean only two experts run across the entire sequence or batch. An expert skipped for one token can still process another.</p>
+<h3>Shared experts and learned specialization</h3>
+<p>Some designs also have shared experts that run for every position alongside the selected routed experts. Count their weights and work separately. A shared expert need not have the same width or mixing rule as the routed ones.</p>
+<aside class="keypoint"><strong>Expert IDs are not subject labels.</strong> Routing depends on a contextual hidden vector at a particular layer. The same word can take different routes in another sentence. “Math expert” and “coding expert” are teaching metaphors, not guaranteed assignments.</aside>
+<aside class="caution"><strong>Sparse activation is not free speed.</strong> The invented bank stores more FFN weights and evaluates fewer per position than the dense reference. That outcome depends on its dimensions. More stored capacity does not prove better quality, and fewer selected weights do not prove proportionally faster execution.</aside>
+</section>
+<section class="chapter" id="ch13">
+<p class="eyebrow">Dense and MoE architectures · Making sparse work run efficiently</p>
+<h2>13. What makes MoE difficult in practice</h2>
+<p>Choosing a few experts is only the beginning. A runtime must group the right vectors, move them to the right weights, execute uneven workloads, and restore their outputs to the original positions. These steps can consume the arithmetic savings.</p>
+<h3>Dispatch → expert computation → combine</h3>
+<div class="table-wrap"><table><thead><tr><th>Stage</th><th>What happens</th><th>Information that must survive</th></tr></thead><tbody>
+<tr><td>Route</td><td>Calculate expert IDs and mixing weights.</td><td>Original position, selected IDs, weights.</td></tr>
+<tr><td>Dispatch</td><td>Group each position’s vector by its selected experts.</td><td>Assignment-to-position mapping; one position may have several assignments.</td></tr>
+<tr><td>Compute</td><td>Run each expert on its assigned group.</td><td>Each output’s assignment identity.</td></tr>
+<tr><td>Combine</td><td>Return outputs, apply routing weights, and sum at each original position.</td><td>Original order and weights; then perform the block’s residual addition.</td></tr>
+</tbody></table></div>
+<h3>Tiny dispatch example: three positions, four experts</h3>
+<p>These routes are made up, not fixed word assignments. Each position selects two experts, so three input vectors create six expert assignments.</p>
+<div class="table-wrap"><table><thead><tr><th>Original position</th><th>Selected experts</th><th>Combine weights</th></tr></thead><tbody>
+<tr><td>0: I</td><td>E1, E3</td><td>0.75, 0.25</td></tr>
+<tr><td>1: am</td><td>E2, E3</td><td>0.60, 0.40</td></tr>
+<tr><td>2: fine</td><td>E1, E4</td><td>0.50, 0.50</td></tr>
+</tbody></table></div>
+<pre class="math">Dispatched groups:
+E1 ← [x₀, x₂]    E2 ← [x₁]
+E3 ← [x₀, x₁]    E4 ← [x₂]
+Assignment counts = [2, 1, 2, 1]
+Total = 6, not 3
+
+Restore position 0:
+y₀ = 0.75 E1(x₀) + 0.25 E3(x₀)
+If E1(x₀) = [2, 0] and E3(x₀) = [0, 4],
+y₀ = [1.5, 1]</pre>
+<p>The groups may execute in a different order from the sentence. Combine reconstructs one output per original position. Attention context is not reordered semantically; dispatch is a temporary arrangement for expert computation.</p>
+<h3>Load balancing and routing collapse</h3>
+<p>If nearly every token chooses E1, that expert and its device become overloaded while other experts receive little useful training. Persistent concentration is often called <strong>routing collapse</strong>. Load-balancing mechanisms discourage it using auxiliary losses, routing adjustments, or other model-specific controls.</p>
+<pre class="math">Toy workload: 6 positions × top-2 = 12 assignments
+4 experts → balanced average = 12 / 4 = 3 assignments each
+Balanced-looking counts: [3, 3, 3, 3]
+Concentrated counts:     [6, 6, 0, 0]
+Both contain 12 assignments, but create different device workloads.</pre>
+<p>Balanced average usage does not require every expert in every sentence, nor does it guarantee equal execution time when experts or devices differ. A balancing term is an additional training pressure, not the main language-model objective.</p>
+<h3>Capacity: what happens when one expert is too popular?</h3>
+<div class="table-wrap"><table><thead><tr><th>Policy</th><th>Behavior</th><th>Consequence</th></tr></thead><tbody>
+<tr><td>Capacity-limited</td><td>Bound assignments per expert in a batch or scheduling unit.</td><td>Excess assignments need explicit dropping, rerouting, or another handling rule.</td></tr>
+<tr><td>Dropless</td><td>Accommodate all routed assignments.</td><td>Avoid drops, but variable group sizes still need memory and scheduling support.</td></tr>
+</tbody></table></div>
+<p>For the concentrated toy counts above, a capacity of four leaves two overflow assignments at each busy expert. What happens to those assignments depends on the actual implementation; never assume they silently choose the next-best expert.</p>
+<h3>Expert parallelism and communication</h3>
+<p>Expert parallelism places different expert weights on different devices. If a token selects an expert elsewhere, its vector must travel there and its result must return. Distributed runtimes often exchange groups of assignments between devices. Communication, synchronization, and a busy expert can delay the whole step.</p>
+<p>Large grouped matrix operations can be efficient. Tiny groups may underuse the accelerator, and empty experts need correct handling. Grouped expert kernels reduce scheduling overhead, but cannot erase poor routing or a slow interconnect.</p>
+<h3>How gradients follow the routes</h3>
+<p>Backward reverses combine and dispatch. It sends the appropriately weighted gradient to each selected expert, accumulates expert parameter gradients, and sums input-gradient contributions back at the original position. Frozen experts still need the input-gradient path when earlier adapters are trainable.</p>
+<pre class="math">For y = Σₑ aₑ Eₑ(x), let g = ∂L/∂y.
+Expert-output gradient: ∂L/∂Eₑ(x) = aₑ g
+Mixing-weight gradient: ∂L/∂aₑ = g Eₑ(x)ᵀ
+Input gradients include the selected experts' paths
+and differentiable routing-weight paths, where applicable.</pre>
+<aside class="caution"><strong>Expert IDs are discrete.</strong> Ordinary differentiation does not flow smoothly through “which expert won”. Router learning depends on the actual differentiable weights, selection scheme, and any auxiliary objectives. Selected experts get task-loss contributions from their assigned positions; unselected experts normally get none from those positions. For normalized top-1 routing, its single weight can be constant, so do not assume the generic mixing path always trains the router.</aside>
+<aside class="keypoint"><strong>Two separate engineering problems.</strong> Model design defines scores, selection, and combination. Runtime design makes dispatch, expert execution, and communication practical. A lower active-parameter count solves neither problem by itself.</aside>
+</section>
+<section class="chapter" id="ch14">
+<p class="eyebrow">Modern efficiency · Known prompts, new tokens, reusable state</p>
+<h2>14. Inference: prefill, decoding, and memory</h2>
+<p>Inference can avoid recomputing earlier token representations and organize work to use hardware better. Prefill, KV caching, batching, chunking, and FlashAttention solve different problems; they can be used together.</p>
+<h3>Prefill versus decode</h3>
+<div class="table-wrap"><table><thead><tr><th></th><th>Prefill</th><th>Ordinary cached decode</th></tr></thead><tbody>
+<tr><td>Known input</td><td>The supplied prompt, possibly processed in chunks.</td><td>One newly supplied token per active sequence per ordinary step.</td></tr>
+<tr><td>Q/K/V work</td><td>Project every supplied position at each attention layer.</td><td>Project the new position; reuse earlier K/V at each layer.</td></tr>
+<tr><td>Attention</td><td>Each query reads itself and permitted earlier positions.</td><td>The new query reads cached earlier positions and its own new K/V.</td></tr>
+<tr><td>Prediction used</td><td>The last prompt position predicts the first generated token.</td><td>The newly processed position predicts the following token.</td></tr>
+<tr><td>Dependency</td><td>Known positions can be computed together; blocks remain sequential.</td><td>The next unknown token normally waits for selection of the current one.</td></tr>
+</tbody></table></div>
+<p>Causality applies to training and inference. A one-token decode may not need an explicit triangular mask because no future entries exist in its available cache. Padding, chunked processing, and other layouts still require the appropriate attention restrictions.</p>
+<h3>Why cache K and V, not the earlier Q?</h3>
+<p>A new query needs earlier keys to calculate match scores and earlier values to gather information. It does not need the earlier queries that made earlier predictions. Causal attention also prevents earlier representations from changing when a later token arrives, making their cached keys and values reusable under fixed weights.</p>
+<pre class="math">One attention layer, logical per-head shapes:
+Prefill: Q [B, Hq, T, Dh]
+         K,V [B, Hkv, T, Dh]
+Decode:  new Q [B, Hq, 1, Dh]
+         available K,V [B, Hkv, T+1, Dh]
+Logical decode scores: [B, Hq, 1, T+1]
+Hq = query heads; Hkv = KV heads; Dh = head width
+GQA maps multiple query heads to each KV head.</pre>
+<p>The cache stores computed activations, not learned weights or final hidden vectors. It is layer-specific and request-specific. Reusing it avoids earlier-token recomputation, but the new query still scans its permitted context in full attention.</p>
+<h3>Tiny cache budget</h3>
+<p>For a uniform full-attention stack, omit allocator overhead, metadata, padding, and temporary workspaces. Real hybrid models can have different kinds of state across layers.</p>
+<pre class="math">KV bytes = 2 × B × L × T × Hkv × Dh × bytes_per_element
+           ↑ both K and V
+Toy: B=1, L=2, T=6, Hkv=1, Dh=2, two-byte elements
+KV bytes = 2 × 1 × 2 × 6 × 1 × 2 × 2 = 96 bytes
+
+Separate illustrative geometry:
+B=1, L=4, T=4,096, Hkv=2, Dh=8, two-byte elements
+KV bytes = 1,048,576 bytes = 1 MiB</pre>
+<p>GQA can reduce cache size by using fewer KV heads than query heads. More concurrent requests and longer retained contexts increase the cache budget. Prompt and generated continuation share the context allowance, including relevant template tokens.</p>
+<h3>Batching: more independent work at once</h3>
+<p>Two requests with three supplied positions and hidden width four have a logical hidden-state shape <strong>[2, 3, 4]</strong>: sequences, positions, components. Both use the same weights, but each keeps its own attention context and cache. They do not read each other’s text.</p>
+<p>During decode, a batch can contain one new token from each active request. <strong>Continuous batching</strong> lets completed requests leave and new work join. The goal is useful hardware utilization and throughput—not filling memory for its own sake. Larger batches can require more memory and increase waiting or per-request delay.</p>
+<h3>FlashAttention: use score tiles immediately</h3>
+<p>Locate FlashAttention <em>inside the attention sublayer</em>, around query–key scores, masking, softmax, and the weighted-value sum. A straightforward implementation may write a full score matrix and a full probability matrix to device memory, then read them again. FlashAttention tiles the computation through a small fast workspace and maintains running statistics and output accumulators.</p>
+<p>The mathematical idea is that the final weighted sum can be accumulated without first storing every normalized weight. Here is a scalar illustration, not an implementation or benchmark.</p>
+<pre class="math">One query, two allowed sources:
+scores = [0, ln(3)] → exponentials = [1, 3]
+V values = [10, 20]
+
+After source 1: numerator = 1×10 = 10; denominator = 1
+After source 2: numerator = 10 + 3×20 = 70; denominator = 1 + 3 = 4
+Attention output = 70 / 4 = 17.5</pre>
+<p>Do not normalize each tile separately and average its result; that loses the correct global weighting. Real FlashAttention uses numerically stable online softmax. If a new tile raises the running maximum score, it rescales the old denominator and numerator before accumulating the new contributions.</p>
+<pre class="math">Stable scalar online-softmax sketch:
+Keep running maximum m, denominator l, and weighted-value accumulator o.
+For a new tile with scores sⱼ and values vⱼ:
+m_new = max(m, maxⱼ sⱼ)
+c = exp(m - m_new)
+l_new = c l + Σⱼ exp(sⱼ - m_new)
+o_new = c o + Σⱼ exp(sⱼ - m_new) vⱼ
+Final result = o / l
+Initialize from the first nonempty allowed tile.</pre>
+<aside class="keypoint"><strong>FlashAttention is not top-k attention.</strong> It computes full allowed attention, subject to floating-point differences, without materializing the whole score/probability table in slower memory. It does not remove full attention’s fundamental pairwise arithmetic, replace the KV cache, or reveal unknown future tokens. A logical score shape is not proof that a tensor of that shape is physically stored.</aside>
+<h3>Chunked prefill: one continuing context</h3>
+<p>Divide a toy six-position prompt into three scheduled chunks. Each chunk passes through the same stack and retains its per-layer K/V. Later chunks can read the preceding chunks; earlier chunks cannot read the future.</p>
+<div class="table-wrap"><table><thead><tr><th>Chunk</th><th>Original positions</th><th>Reads at each layer</th><th>Retained state afterward</th></tr></thead><tbody>
+<tr><td>A: The, cat</td><td>0, 1</td><td>Allowed positions within A.</td><td>A’s K/V.</td></tr>
+<tr><td>B: was, tired</td><td>2, 3</td><td>A’s cached K/V plus allowed B positions.</td><td>A + B K/V.</td></tr>
+<tr><td>C: It, slept</td><td>4, 5</td><td>A + B cached K/V plus allowed C positions.</td><td>A + B + C K/V.</td></tr>
+</tbody></table></div>
+<p>Word-level tokenization and punctuation are simplified here. Positions do not restart at zero for each chunk. The last position of C predicts the first continuation token. In a single-head causal example, six positions still have <strong>21 allowed query–key pairs</strong>; chunk scheduling does not make earlier context disappear.</p>
+<aside class="caution"><strong>Chunking cannot make all persistent memory vanish.</strong> It can reduce temporary working peaks and let other requests run between chunks. Model weights and the growing cache must still fit or be managed elsewhere. A chunk of one prompt can be batched with decode tokens from other requests: batching and chunking are not opposites.</aside>
+<h3>Compute-bound or memory-bound?</h3>
+<div class="table-wrap"><table><thead><tr><th>Situation</th><th>Common pressure</th><th>Why it is not a universal verdict</th></tr></thead><tbody>
+<tr><td>Large prefill</td><td>Many positions provide large matrix work; attention also has many pairs.</td><td>Context length, kernels, precision, and hardware affect the bottleneck.</td></tr>
+<tr><td>Small-batch decode</td><td>Reading large weights and caches for relatively few new positions can limit speed.</td><td>Batching improves weight reuse; long context increases cache reads and attention work.</td></tr>
+<tr><td>Routed MoE</td><td>Expert weight movement, tiny groups, dispatch, and cross-device communication.</td><td>Fewer selected weights do not guarantee lower latency than efficient dense kernels.</td></tr>
+</tbody></table></div>
+<p>Prefill delay contributes to time until the first token. Decode speed contributes to time between tokens. A runtime can improve aggregate throughput without improving either latency for every request.</p>
+<div class="table-wrap"><table><thead><tr><th>Technique</th><th>Work it avoids or organizes</th><th>State it does not eliminate</th></tr></thead><tbody>
+<tr><td>KV cache</td><td>Avoid earlier-token recomputation during decode.</td><td>The retained per-layer K/V itself.</td></tr>
+<tr><td>FlashAttention</td><td>Avoid full intermediate attention tables in slower device memory.</td><td>Model weights, needed K/V, and allowed pairwise attention work.</td></tr>
+<tr><td>Batching</td><td>Group independent requests for efficient shared execution.</td><td>Each request’s separate context and cache.</td></tr>
+<tr><td>Chunked prefill</td><td>Schedule one prompt in smaller pieces.</td><td>The continuing prompt context and its accumulated cache.</td></tr>
+</tbody></table></div>
+</section>
+<section class="chapter" id="ch15">
+<p class="eyebrow">Modern efficiency and architectural changes</p>
+<h2>15. Long context and hybrid sequence models</h2>
+<p><strong>Purpose:</strong> Keep useful information from a long input without making every layer revisit every earlier position separately.</p>
+<h3>Different ways to remember earlier positions</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Sequence mixer</th><th>How it reads history</th><th>Memory and trade-off</th></tr></thead>
+<tbody>
+<tr><td>Full causal attention</td><td>Compare the current Q with all allowed K; softmax the scores; mix the corresponding V.</td><td>During cached generation, retain separate K/V for earlier positions. Direct access grows more expensive with context.</td></tr>
+<tr><td>Sliding-window attention</td><td>Apply ordinary attention only to a recent window, sometimes alongside global-attention layers or special positions.</td><td>A bounded local cache can discard older entries. A distant position is no longer directly readable by that local layer.</td></tr>
+<tr><td>Linear attention</td><td>Use a different attention formulation, often accumulating key/value associations into a fixed-shape state rather than normalizing scores over every earlier position.</td><td>Can avoid quadratic sequence-length work for fixed head dimensions. It is not automatically equivalent to softmax attention.</td></tr>
+<tr><td>Gated DeltaNet</td><td>Retain part of an association state, correct an association using the current K/V, then read it using Q.</td><td>A fixed-shape recurrent state mixes, decays, and overwrites information. It is not a lossless copy of history.</td></tr>
+</tbody>
+</table></div>
+<p><strong>Number impression:</strong> With eight positions, one causal attention head has 36 allowed query–key pairs, including each position itself. A window of three positions including the current position has only 21. At the eighth position, full attention reads eight positions; this local window reads positions six through eight.</p>
+<pre class="math">Full causal pairs: 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 = 36
+Window-3 pairs:    1 + 2 + 3 + 3 + 3 + 3 + 3 + 3 = 21
+Full-attention prefill: O(L²) pair work per head, with head width fixed
+Window attention:       O(Lw), with window width w
+Fixed-state recurrence: O(L) state updates, with state dimensions fixed</pre>
+<aside class="hint"><strong>Execution is not architecture.</strong> FlashAttention computes the same attention more efficiently without requiring a stored full score matrix. It does not change full attention into a sliding window or a recurrent state. A logical score shape is not a claim that the whole score tensor is materialized.</aside>
+<h3>A small Gated DeltaNet-style recurrence</h3>
+<p>Think of the state as a numerical association matrix. K addresses an association; V supplies what to write; Q reads it. With row vectors, a simplified recurrence is:</p>
+<pre class="math">S̄ₜ = αₜ Sₜ₋₁                         retain some earlier state
+prediction = kₜ S̄ₜ                   read the old association
+δₜ = βₜ (vₜ − prediction)              choose how much to correct it
+Sₜ = S̄ₜ + kₜᵀ δₜ                     write the correction
+oₜ = qₜ Sₜ                            read the updated state
+
+S has shape [key components, value components].
+α controls retention; β controls update strength.</pre>
+<p>Now shrink Q, K, V, and the state to scalars. Start with S₀ = 0 and use q = k = 1. This removes head geometry so we can see the update.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Step</th><th>Retention α</th><th>Value v</th><th>Update β</th><th>Retained state</th><th>Correction δ</th><th>New state / output</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>1</td><td>4</td><td>0.5</td><td>0</td><td>0.5 × (4 − 0) = 2</td><td>2</td></tr>
+<tr><td>2</td><td>0.5</td><td>6</td><td>0.5</td><td>0.5 × 2 = 1</td><td>0.5 × (6 − 1) = 2.5</td><td>3.5</td></tr>
+</tbody>
+</table></div>
+<p>The second value corrects the association after some old information has decayed. By contrast, ordinary attention with equal scores for values 4 and 6 gives equal weights and an output of 5. These are <strong>different mechanisms, not equal computations</strong>.</p>
+<aside class="caution">This is a teaching recurrence, not a complete Qwen forward pass. Real Gated DeltaNet adds learned projections, short causal convolution, Q/K normalization and query scaling, many state matrices, learned gates, and output normalization/gating. Chunked algorithms can compute the recurrence efficiently during training and prefill; a recurrent mathematical dependency does not demand a slow Python loop.</aside>
+<h3>Hybrid means different mixers in different blocks</h3>
+<pre class="math">Gated DeltaNet block → Gated DeltaNet block → Gated DeltaNet block
+→ full-attention block → repeat</pre>
+<p>Each block still processes every valid position that passes through it. The model does not assign half the tokens to attention and the other half to Gated DeltaNet. Gated DeltaNet blocks retain recurrent and short-convolution state; full-attention blocks retain K/V caches. A hybrid model therefore still has some context-dependent cache growth.</p>
+<aside class="keypoint"><strong>Keep two choices separate:</strong> hybrid versus all-attention describes cross-position mixing; dense FFN versus MoE describes the later per-position computation. A hybrid model can be dense or MoE. “Recurrent” means the next step uses the previous state, not that a token loops backward through the block stack.</aside>
+</section>
+<section class="chapter" id="ch16">
+<p class="eyebrow">Modern efficiency and architectural changes</p>
+<h2>16. Precision, quantization, and distributed execution</h2>
+<p><strong>Purpose:</strong> Fit the model and its working state into available memory, while preserving useful numerical behavior and distributing computation where needed.</p>
+<h3>One model can use several precisions</h3>
+<p>Ask four separate questions: <strong>What is stored? What is multiplied? What accumulates the sum? What is updated?</strong> Weights, activations, caches, gradients, and optimizer state need not share a datatype. Activations are input-dependent intermediate tensors, such as hidden states and Q/K/V; the term does not mean only the output of an activation function such as SiLU.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Representation</th><th>What the name tells you</th><th>Important distinction</th></tr></thead>
+<tbody>
+<tr><td>FP32</td><td>32 bits: sign 1, exponent 8, stored fraction 23.</td><td>Common for sensitive reductions, optimizer state, and numerical references.</td></tr>
+<tr><td>FP16</td><td>16 bits: sign 1, exponent 5, stored fraction 10.</td><td>More fraction bits than BF16, but a much narrower exponent range.</td></tr>
+<tr><td>BF16</td><td>16 bits: sign 1, exponent 8, stored fraction 7.</td><td>Wide dynamic range does not mean FP32 accuracy. Both BF16 and FP16 use two bytes per value.</td></tr>
+<tr><td>FP8</td><td>Eight-bit floating-point variants, commonly E4M3 or E5M2.</td><td>The exponent/fraction split and special-value rules depend on the exact variant. Scaling and kernel support matter.</td></tr>
+<tr><td>INT8 / INT4</td><td>Integer codes interpreted through scales and sometimes zero points.</td><td>The code itself is not the reconstructed real-valued weight.</td></tr>
+<tr><td>NF4</td><td>A four-bit codebook-based weight representation.</td><td>Not the same encoding as an E2M1 floating-point value; often decoded for higher-precision computation.</td></tr>
+<tr><td>MXFP4 / NVFP4</td><td>Scaled low-bit floating-point schemes using FP4 element encodings.</td><td>MXFP4 conventionally uses E2M1 values with a shared E8M0 scale per 32 values. NVFP4 conventionally uses E2M1 values, an E4M3 scale per 16 values, and an additional tensor scale. Their packing and scaling contracts are not interchangeable.</td></tr>
+</tbody>
+</table></div>
+<p>Exponent bits mainly control range; fraction bits mainly control spacing between nearby values. For normal binary values, the implicit leading bit makes significand precision 24 bits for FP32, 11 for FP16, and 8 for BF16.</p>
+<h3>Quantization changes representable values</h3>
+<pre class="math">Simplified symmetric INT8, scale s = 0.01, zero point z = 0:
+q = clip(round(w / s), supported integer range)
+ŵ = s q
+
+w  = [ 0.237, −0.413 ]
+q  = [    24,    −41 ]
+ŵ = [  0.24,  −0.41 ]
+ŵ − w = [0.003, 0.003]</pre>
+<p>This is approximation, not lossless compression. Groupwise scales adapt the representable grid to different regions of a weight tensor. Activation quantization, weight quantization, and cache quantization are separate decisions.</p>
+<p>A weight-only four-bit path might store packed weights, decode a small BF16 tile, multiply BF16 operands, accumulate in FP32, then round the output to BF16. A compatible native low-bit kernel may instead consume low-bit operands directly. Neither path follows merely from the label “4-bit model.” Even FP32 accumulation cannot recover information already lost when the operands were quantized.</p>
+<aside class="hint">Accumulator precision is kernel-dependent: FP32 accumulation is common for BF16/FP16 GEMMs; integer dot products often use INT32. Output dtype is a further choice. A BF16 tensor result does not by itself reveal the accumulator dtype.</aside>
+<figure data-asset="Transformer datatypes_ storage, computation, accumulation.png"><img alt="Transformer datatypes_ storage, computation, accumulation" decoding="async" loading="lazy" src="assets/diagram-11.png"/><figcaption>Storage, compute, and accumulation are separate. The schematic uses generic LayerNorm and a simple FFN; our Qwen examples use RMSNorm and gated FFNs. Read the quantization equations rather than the illustrated dot positions, which are not drawn to scale. The quantized-base LoRA branch is QLoRA-style, not a requirement of all LoRA.</figcaption></figure>
+<h3>Number impression: raw weight payload</h3>
+<pre class="math">Raw bytes = number of parameters × bits per parameter / 8
+Decimal GB = bytes / 1,000,000,000</pre>
+<div class="table-wrap"><table>
+<thead><tr><th>Exactly 70 billion weights</th><th>Idealized raw payload</th></tr></thead>
+<tbody><tr><td>FP32</td><td>280 GB</td></tr><tr><td>BF16 / FP16</td><td>140 GB</td></tr><tr><td>8-bit</td><td>70 GB</td></tr><tr><td>4-bit</td><td>35 GB</td></tr></tbody>
+</table></div>
+<p>These exclude scales, metadata, padding, activations, caches, workspaces, gradients, and optimizer state. LoRA reduces trainable weights and associated training state; it does not remove the base weights. Frozen base operations can still need input-gradient backward to reach earlier adapters.</p>
+<h3>Four ways to span devices</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Method</th><th>What is split?</th><th>Mechanism and principal cost</th></tr></thead>
+<tbody>
+<tr><td>Tensor parallelism</td><td>Dimensions within projections or other operations.</td><td>Compute pieces of a tensor result; gather, sum, or redistribute when needed. Communication can be frequent.</td></tr>
+<tr><td>Pipeline parallelism</td><td>Successive groups of blocks.</td><td>Send activations forward and training gradients backward between stages. Microbatches overlap different stages, but startup/drain and imbalance create idle bubbles.</td></tr>
+<tr><td>Expert parallelism</td><td>The expert bank inside MoE sublayers.</td><td>Dispatch each position to its selected experts, then return and combine outputs. Communication and uneven expert load matter.</td></tr>
+<tr><td>Data parallelism</td><td>Training examples across replicas of the same parameters.</td><td>Compute local gradients and synchronize an appropriately weighted aggregate. Basic replicated training duplicates model state; sharded approaches distribute some state.</td></tr>
+</tbody>
+</table></div>
+<p>For tensor parallelism, keep our row-activation convention: x is a row and W is stored as [output, input]. Splitting W's output rows produces separate output components:</p>
+<pre class="math">x = [1, 2, 3, 4]
+W = [[1, 1, 0, 0],
+     [0, 0, 1, 1],
+     [2, 0, 0, 0],
+     [0, 3, 0, 0]]
+y = x Wᵀ = [3, 7, 2, 6]
+Device A, first two output rows: [3, 7]
+Device B, last two output rows:  [2, 6]
+Concatenate output components, not add them.</pre>
+<p>A three-stage forward pipeline processing three microbatches takes five ideal equal-duration slots: three to fill the first microbatch's path and two more for the remaining microbatches. This is not a full forward/backward training schedule and is not ordinary independent processing of pieces of one sequence.</p>
+<pre class="math">Equally weighted data-parallel local gradients:
+gA = [2, −1], gB = [0, 3]
+g = (gA + gB) / 2 = [1, 1]
+
+Example SGD, initial θ = [2, 3], learning rate η = 0.1:
+θnew = θ − ηg = [1.9, 2.9]</pre>
+<figure data-asset="Four ways to distribute transformer work-1.png"><img alt="Four ways to distribute transformer work-1" decoding="async" loading="lazy" src="assets/diagram-12.png"/><figcaption>Four different splits, which can be combined. This older diagram uses column activations; the equivalent row-vector calculation above preserves W[output,input]. Its [1,1] is the averaged gradient, not a justified updated parameter vector. The pipeline timeline is forward-only; its final fully idle column is padding, not required work.</figcaption></figure>
+<figure data-asset="Corrected Transformer Routing and Pipeline Guide-2.png"><img alt="Corrected Transformer Routing and Pipeline Guide-2" decoding="async" loading="lazy" src="assets/diagram-13.png"/><figcaption>The corrected distribution guide clarifies that microbatches are distinct workloads and that routing acts within an MoE sublayer. Routing selects experts; expert parallelism places experts on devices. Not-selected experts may process other positions. Diagram column vectors are the transpose of this tutorial's row activations.</figcaption></figure>
+<aside class="keypoint">These methods can coexist. A pipeline stage can contain tensor-parallel operations and expert-parallel MoE, with the distributed model replicated across data-parallel groups. Corresponding copies of the same expert synchronize; distinct experts are not averaged together. More batching on one device is not itself distributed execution, and no split guarantees a speedup.</aside>
+</section>
+<section class="chapter" id="ch17">
+<p class="eyebrow">Modern efficiency and architectural changes</p>
+<h2>17. Multimodal inputs and multi-token prediction</h2>
+<p><strong>Purpose:</strong> Multimodal processing lets the language-model stack use non-text information. Multi-token prediction supplies additional learning signals for future tokens. These are independent changes.</p>
+<h3>How an image becomes part of the input</h3>
+<pre class="math">Text → tokenizer → token IDs → embedding vectors
+Image/video → preprocessing → vision encoder → merged/projected visual vectors
+                       ↓
+          organized mixed sequence → language-model blocks
+          → final normalization → LM head → next text token</pre>
+<p>The image is not simply converted into ordinary word IDs. Its regions become learned visual vectors, placed at designated visual positions alongside text embeddings and special markers. At the interface, both kinds of position have the same hidden width. Position metadata can encode spatial and temporal structure.</p>
+<p>In the supplied Qwen3.5 configuration, the vision encoder's internal width is 1152 and its output width is 4096, matching the language model. For a purely illustrative input with four prepared visual positions and six text/marker positions, the mixed sequence has ten positions, each 4096 wide. Actual image resolution, patching, merging, and markers determine the real position count.</p>
+<aside class="caution">Image understanding does not imply image generation. This model's output head predicts vocabulary tokens. Video input can use multiple frames; audio requires a separately supported path. Do not infer audio support from “multimodal.”</aside>
+<h3>Ordinary next-token training versus MTP</h3>
+<p>Ordinary training already scores many supplied positions in parallel: each position predicts its immediate successor. MTP adds objectives or modules for further future offsets.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Context or objective</th><th>Illustrative target</th><th>What it means</th></tr></thead>
+<tbody>
+<tr><td>Ordinary next token after “The cat”</td><td>sat</td><td>The main prediction distribution scores the immediate next token.</td></tr>
+<tr><td>Additional future-offset objective</td><td>on</td><td>An auxiliary prediction module learns information about a later continuation token.</td></tr>
+<tr><td>Further future-offset objective</td><td>the</td><td>A conceptual additional target; exact module layout and training schedule vary.</td></tr>
+</tbody>
+</table></div>
+<p>The known continuation is “sat on the mat.” These words are illustrative tokens, not actual tokenizer results. Some MTP designs condition later modules on earlier token information; they are not necessarily independent guesses made by one unchanged LM head.</p>
+<h3>MTP is not speculative decoding</h3>
+<p>MTP describes training and prediction modules. Speculative decoding describes an inference algorithm: propose candidate tokens, verify them with the target model, accept an allowed prefix, handle any rejection, and continue. A separate draft model can supply proposals without MTP; an MTP-trained model can still run ordinary one-token decoding.</p>
+<aside class="keypoint">With a correctly implemented exact speculative algorithm, verification and acceptance rules preserve the target decoding distribution. Blindly accepting all proposals does not. Speed depends on acceptance rate, proposal cost, verification cost, and runtime support; multiple proposed tokens do not guarantee multiple accepted tokens.</aside>
+<p>The Qwen3.5 model card reports multi-step MTP training; the supplied configuration declares one MTP hidden layer. Training steps, architectural module count, and the runtime's proposal length are different quantities. The field alone does not establish an enabled speculative runtime.</p>
+<p>Source: <a href="https://huggingface.co/Qwen/Qwen3.5-397B-A17B">official Qwen3.5 model card</a>.</p>
+</section>
+<section class="chapter" id="ch18">
+<p class="eyebrow">Qwen architecture walkthrough</p>
+<h2>18. Qwen’s architectural evolution</h2>
+<p><strong>Purpose:</strong> Recognize which part of the computation changed, rather than treating every family name as a larger version of the same model.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Selected stepping stone</th><th>Sequence mixing</th><th>Per-position processing</th><th>What to notice</th></tr></thead>
+<tbody>
+<tr><td>Qwen2 / Qwen2.5, anchored by Qwen2.5-72B</td><td>Our 72B anchor uses full causal GQA attention; its config disables sliding-window attention.</td><td>Dense gated FFN.</td><td>The familiar embeddings → repeated normalized residual blocks → final norm → vocabulary head. Qwen2 also had MoE branches; the family was not exclusively dense.</td></tr>
+<tr><td>Qwen3-32B</td><td>Full causal GQA attention with Q/K normalization.</td><td>Dense gated FFN.</td><td>A dense branch; explicit head width need not equal hidden width divided by query heads.</td></tr>
+<tr><td>Qwen3-235B-A22B</td><td>Full causal GQA attention.</td><td>128 routed experts, top-8 per position.</td><td>MoE changes the FFN path, not the definition of attention.</td></tr>
+<tr><td>Qwen3-Next-80B-A3B</td><td>Three Gated DeltaNet blocks followed by one gated full-attention block.</td><td>512 routed experts, top-10, plus one shared expert.</td><td>Hybrid sequence mixing, sparse MoE, and MTP; this selected checkpoint is text-only.</td></tr>
+<tr><td>Qwen3.5-397B-A17B</td><td>Hybrid Gated DeltaNet / gated full attention.</td><td>512 routed experts, top-10, plus one shared expert.</td><td>A vision encoder supplies multimodal inputs; the model card reports multi-step MTP training.</td></tr>
+<tr><td>Selected Qwen3.8 releases</td><td>Continue the hybrid architecture foundation.</td><td>Both dense and MoE choices, depending on checkpoint.</td><td>Training and behavior can improve without replacing the main block pattern. See chapter 21 for exact checkpoints.</td></tr>
+</tbody>
+</table></div>
+<p><strong>Number impression:</strong> Qwen3-Next's 48-block, three-to-one pattern contains 36 Gated DeltaNet blocks and 12 full-attention blocks. Our Qwen3.5 anchor has 60 blocks, giving 45 and 15 respectively. Both retain recurrent state in some layers and K/V in others.</p>
+<aside class="keypoint">There are separate axes: input modalities; sequence mixer; dense versus routed FFN; training objectives; and inference runtime. MoE does not require recurrence, recurrence does not require MoE, and improved reasoning is not proof of a new attention design.</aside>
+<p>All these models still transform position vectors using weights shared across positions. Ordinary generation chooses a token, feeds it into the same stack, and repeats. “A22B,” “A3B,” and “A17B” are approximate active-parameter labels from model naming/cards, not expert counts or full weight-memory requirements.</p>
+<p>Sources: <a href="https://huggingface.co/docs/transformers/model_doc/qwen2">Qwen2 family documentation</a>; <a href="https://huggingface.co/Qwen/Qwen2.5-72B/blob/main/config.json">Qwen2.5-72B config</a>; <a href="https://huggingface.co/Qwen/Qwen3-32B/blob/main/config.json">Qwen3-32B config</a>; <a href="https://huggingface.co/Qwen/Qwen3-235B-A22B/blob/main/config.json">Qwen3 MoE config</a>; <a href="https://huggingface.co/Qwen/Qwen3-Next-80B-A3B-Instruct">Qwen3-Next card</a>.</p>
+</section>
+<section class="chapter" id="ch19">
+<p class="eyebrow">Qwen architecture walkthrough</p>
+<h2>19. Read a real Qwen model configuration</h2>
+<p><strong>Purpose:</strong> Turn a JSON configuration into actual blocks, projection shapes, and retained state. A config describes geometry; it does not contain learned weight values or prove a particular runtime's memory use.</p>
+<p>Our anchor is the supplied <code>Qwen3.5-397B-A17B-config.json</code>, cross-checked against the official configuration. Operation details below also follow the inspected Transformers implementation. Use row activations throughout: <code>x[...,input]</code>, stored weights <code>W[output,input]</code>, and <code>y = x Wᵀ</code>.</p>
+<h3>Start with boundaries and block types</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Field</th><th>Value</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>text_config.hidden_size</td><td>4096</td><td>Each position has 4096 components at language-block boundaries.</td></tr>
+<tr><td>num_hidden_layers</td><td>60</td><td>Main language-model blocks, not individual projections.</td></tr>
+<tr><td>layer_types</td><td>Three linear_attention, then one full_attention, repeating</td><td>Here linear_attention identifies Gated DeltaNet: 45 GDN blocks and 15 full-attention blocks.</td></tr>
+<tr><td>vision_config.out_hidden_size</td><td>4096</td><td>Visual outputs enter the same hidden-width interface. “text_config” names the language stack, not a text-only input restriction.</td></tr>
+<tr><td>vocab_size</td><td>248320</td><td>Number of vocabulary logits at every scored position.</td></tr>
+<tr><td>max_position_embeddings</td><td>262144</td><td>Configured native context setting; not current sequence length, a memory guarantee, or guaranteed quality at that length.</td></tr>
+<tr><td>dtype / mamba_ssm_dtype</td><td>bfloat16 / float32</td><td>Declared precision settings; recurrent-state precision is distinct from the general model dtype. Actual kernels and runtime casts require implementation inspection.</td></tr>
+<tr><td>tie_word_embeddings / mtp_num_hidden_layers</td><td>false / 1</td><td>Input embedding and output-head weights are untied; an MTP architectural setting is declared separately from the main 60 blocks.</td></tr>
+</tbody>
+</table></div>
+<pre class="math">Illustrative batch B = 1, length L = 6:
+block-boundary activations: [B,L,H] = [1,6,4096]
+all-position logits:       [1,6,248320]
+
+15 repetitions × (3 GDN + 1 full attention) = 45 GDN + 15 full = 60
+Each main block also contains its own MoE sublayer.</pre>
+<h3>Full attention: hidden width is not Q width</h3>
+<pre class="math">num_attention_heads = 32; num_key_value_heads = 2; head_dim = 256
+Q-only width       = 32 × 256 = 8192
+K width = V width  =  2 × 256 = 512
+Q heads per KV head = 32 / 2 = 16
+Packed Q+gate width = 2 × 8192 = 16384
+
+normalized X [B,L,4096]
+→ packed projection [B,L,16384]
+→ per-head split into Q and output gate, each [B,L,32,256]
+Q/K normalization; partial RoPE on Q/K
+Q [B,32,L,256]; K,V [B,2,L,256]
+→ causal attention → head outputs [B,L,32,256]
+→ flatten [B,L,8192] → multiply by sigmoid(output gate)
+→ output projection [B,L,4096]</pre>
+<p>The inspected implementation packs Q and its gate into the same projection, splitting within each head's packed output. This does <em>not</em> create 64 query heads. The gate modulates the attention result; it is not another attention-score matrix. The configured partial rotary factor 0.25 applies RoPE to 64 of the 256 components per Q/K head.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Full-attention weight</th><th>Stored shape [out,in]</th><th>Matrix weights</th></tr></thead>
+<tbody>
+<tr><td>Packed Q + output gate</td><td>[16384,4096]</td><td>67,108,864</td></tr>
+<tr><td>K projection</td><td>[512,4096]</td><td>2,097,152</td></tr>
+<tr><td>V projection</td><td>[512,4096]</td><td>2,097,152</td></tr>
+<tr><td>Output projection</td><td>[4096,8192]</td><td>33,554,432</td></tr>
+<tr><td>These four matrices only, one full-attention layer</td><td>Sum of the above</td><td>104,857,600</td></tr>
+</tbody>
+</table></div>
+<p>The Q-only conceptual matrix would be [8192,4096], but it is only part of the packed projection. Counts above exclude Q/K norm weights, block norms, MoE, and all other modules.</p>
+<h3>Gated DeltaNet uses a different geometry</h3>
+<pre class="math">linear_num_key_heads = 16; linear_key_head_dim = 128
+linear_num_value_heads = 64; linear_value_head_dim = 128
+Q width = K width = 16 × 128 = 2048
+V width            = 64 × 128 = 8192
+Packed QKV width   = 2048 + 2048 + 8192 = 12288
+Value heads per Q/K head = 64 / 16 = 4
+
+X [B,L,4096] → QKV projections and short causal convolution
+→ Q/K [B,L,16,128], V [B,L,64,128]
+→ expand Q/K head associations to the 64 value-head computations
+→ gated delta recurrence → [B,L,64,128]
+→ gated normalization → flatten [B,L,8192]
+→ output projection → [B,L,4096]</pre>
+<p>Additional projections produce the output gate and the update/decay controls. Do not apply the full-attention head settings to GDN. A logical recurrent-state shape is [B,64,128,128]: one key-by-value matrix per value head. For one sequence, that is 1,048,576 state values, or 4 MiB at FP32, <em>per GDN layer and excluding convolution state</em>. This shape does not grow with context length.</p>
+<p>For contrast, one full-attention layer adds 2,048 raw cache bytes per new position at BF16: two tensors, two KV heads, 256 components, and two bytes per component. Across the hybrid stack, memory therefore includes both fixed recurrent-state terms and growing full-attention cache terms.</p>
+<h3>Expert geometry: available versus selected</h3>
+<pre class="math">num_experts = 512; num_experts_per_tok = 10
+moe_intermediate_size = shared_expert_intermediate_size = 1024
+
+One expert, with row x [4096]:
+gate = SiLU(x Wgateᵀ)     Wgate [1024,4096]
+up   = x Wupᵀ            Wup   [1024,4096]
+expert(x) = (gate ⊙ up) Wdownᵀ
+                          Wdown [4096,1024]
+
+Each projection matrix: 4096 × 1024 = 4,194,304 weights
+One expert's three matrices: 3 × 4096 × 1024 = 12,582,912</pre>
+<div class="table-wrap"><table>
+<thead><tr><th>Exactly what is counted</th><th>Projection weights</th></tr></thead>
+<tbody>
+<tr><td>One routed expert, three matrices</td><td>12,582,912</td></tr>
+<tr><td>512-expert routed bank, one MoE layer</td><td>6,442,450,944</td></tr>
+<tr><td>Ten selected routed experts, one position in one layer</td><td>125,829,120</td></tr>
+<tr><td>Ten selected routed experts plus same-width shared expert</td><td>138,412,032</td></tr>
+<tr><td>Router matrix only, [512,4096]</td><td>2,097,152</td></tr>
+<tr><td>All 60 routed banks' expert projection matrices only</td><td>386,547,056,640</td></tr>
+</tbody>
+</table></div>
+<p>The shared expert is a separate branch, not one of the top ten. The inspected implementation renormalizes the selected routing probabilities, combines routed outputs, and adds a sigmoid-gated shared-expert output. Expert gate/up matrices may be fused into a stored [512,2048,4096] bank; fusion changes layout, not the count.</p>
+<aside class="caution"><strong>Do not multiply the whole bank by ten.</strong> Ten experts are selected <em>from</em> 512. Different positions can select different experts. Selected matrix-weight counts are neither FLOPs nor latency nor a complete active-parameter count. Even the 60-bank subtotal is not a complete model count: it excludes shared experts, routers/gates, all mixers and norms, embeddings, LM head, vision modules, MTP, and other details.</aside>
+<p>The untied embedding table and LM-head matrix each have shape [248320,4096] and 1,017,118,720 weights under this geometry. This is another precisely scoped matrix count, not a reconstructed complete checkpoint inventory. Exact complete totals require the implemented module/tensor inventory and a definition of what components are included.</p>
+<figure data-asset="Qwen3.5 Architecture_ From Configuration to Computation.png"><img alt="Qwen3.5 Architecture_ From Configuration to Computation" decoding="async" loading="lazy" src="assets/diagram-14.png"/><figcaption>The panels enlarge operations inside the 60-block stack; they are not extra layers after it. Correction: Q alone is 8192 wide, but the implemented packed Q+gate projection is 16384 wide. The image's output-matrix input/output labels are reversed: with W[out,in], the output projection is [4096,8192], mapping 8192 components to 4096. Its expert counts include only the named projection matrices. Diagram column activations correspond to this tutorial's transposed row notation.</figcaption></figure>
+<p>Sources: <a href="https://huggingface.co/Qwen/Qwen3.5-397B-A17B/blob/main/config.json">official configuration</a>; <a href="https://huggingface.co/Qwen/Qwen3.5-397B-A17B">official model card</a>; <a href="https://github.com/huggingface/transformers/blob/main/src/transformers/models/qwen3_5_moe/modeling_qwen3_5_moe.py">inspected Transformers implementation</a>. The supplied JSON is the numerical anchor; the implementation link is a moving source, not a pinned checkpoint execution.</p>
+<details id="original-config"><summary>Source file: view the complete supplied configuration</summary><p>This is the JSON from your first ZIP, unchanged. Configuration describes geometry; it does not include learned weight values.</p><p><a download="Qwen3.5-397B-A17B-config.json" href="#original-config" id="download-config">Download original JSON</a></p><pre><code>{
+    "architectures": [
+        "Qwen3_5MoeForConditionalGeneration"
+    ],
+    "image_token_id": 248056,
+    "model_type": "qwen3_5_moe",
+    "text_config": {
+        "attention_bias": false,
+        "attention_dropout": 0.0,
+        "attn_output_gate": true,
+        "dtype": "bfloat16",
+        "eos_token_id": 248044,
+        "full_attention_interval": 4,
+        "head_dim": 256,
+        "hidden_act": "silu",
+        "hidden_size": 4096,
+        "initializer_range": 0.02,
+        "layer_types": [
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention"
+        ],
+        "linear_conv_kernel_dim": 4,
+        "linear_key_head_dim": 128,
+        "linear_num_key_heads": 16,
+        "linear_num_value_heads": 64,
+        "linear_value_head_dim": 128,
+        "max_position_embeddings": 262144,
+        "mlp_only_layers": [],
+        "model_type": "qwen3_5_moe_text",
+        "moe_intermediate_size": 1024,
+        "mtp_num_hidden_layers": 1,
+        "mtp_use_dedicated_embeddings": false,
+        "num_attention_heads": 32,
+        "num_experts": 512,
+        "num_experts_per_tok": 10,
+        "num_hidden_layers": 60,
+        "num_key_value_heads": 2,
+        "rms_norm_eps": 1e-06,
+        "router_aux_loss_coef": 0.001,
+        "shared_expert_intermediate_size": 1024,
+        "use_cache": true,
+        "vocab_size": 248320,
+        "mamba_ssm_dtype": "float32",
+        "rope_parameters": {
+            "mrope_interleaved": true,
+            "mrope_section": [
+                11,
+                11,
+                10
+            ],
+            "rope_type": "default",
+            "rope_theta": 10000000,
+            "partial_rotary_factor": 0.25
+        }
+    },
+    "tie_word_embeddings": false,
+    "transformers_version": "4.57.0.dev0",
+    "video_token_id": 248057,
+    "vision_config": {
+        "deepstack_visual_indexes": [],
+        "depth": 27,
+        "hidden_act": "gelu_pytorch_tanh",
+        "hidden_size": 1152,
+        "in_channels": 3,
+        "initializer_range": 0.02,
+        "intermediate_size": 4304,
+        "model_type": "qwen3_5_moe",
+        "num_heads": 16,
+        "num_position_embeddings": 2304,
+        "out_hidden_size": 4096,
+        "patch_size": 16,
+        "spatial_merge_size": 2,
+        "temporal_patch_size": 2
+    },
+    "vision_end_token_id": 248054,
+    "vision_start_token_id": 248053
+}</code></pre></details></section>
+<section class="chapter" id="ch20">
+<p class="eyebrow">Qwen architecture walkthrough</p>
+<h2>20. Follow a token through dense and MoE Qwen models</h2>
+<p><strong>Purpose:</strong> Connect geometry to one complete request: prefill, choose the first answer token, then decode the following token with retained memory.</p>
+<p>Compare the dense full-attention Qwen2.5-72B anchor with hybrid MoE Qwen3.5-397B-A17B. Assume a text-only request tokenizes into six positions. Six is chosen for illustration; words and tokens need not correspond one-to-one.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Stage</th><th>Qwen2.5-72B</th><th>Qwen3.5-397B-A17B</th></tr></thead>
+<tbody>
+<tr><td>Embedding lookup</td><td>Six IDs → [1,6,8192] activations.</td><td>Six IDs → [1,6,4096] activations. Visual inputs, if present, would first enter through the vision path.</td></tr>
+<tr><td>Sequence mixing in each block</td><td>Normalize → full causal GQA attention → residual addition.</td><td>Normalize → the block's GDN or full-attention mixer → residual addition.</td></tr>
+<tr><td>Per-position processing</td><td>Normalize → dense SwiGLU FFN → residual addition. Gate/up width 29568; return width 8192.</td><td>Normalize → route each position to ten of 512 experts; also run the shared expert; combine → residual addition. Expert width 1024; return width 4096.</td></tr>
+<tr><td>Stack depth</td><td>Repeat through 80 main blocks.</td><td>Repeat through 60 main blocks: 45 GDN, 15 full attention.</td></tr>
+<tr><td>Retained inference memory</td><td>Each block's K/V cache.</td><td>GDN recurrent/convolution states and full-attention K/V caches, independently for each layer.</td></tr>
+<tr><td>First answer prediction</td><td>Latest final-normalized row: 8192 → 152064 vocabulary logits.</td><td>Latest final-normalized row: 4096 → 248320 vocabulary logits.</td></tr>
+<tr><td>Next decoding input</td><td>Chosen token embedding [1,1,8192].</td><td>Chosen token embedding [1,1,4096].</td></tr>
+</tbody>
+</table></div>
+<h3>Prefill processes all known positions</h3>
+<p>The six rows pass through <em>one shared stack</em>, with causality controlling which earlier information each row can use. Blocks are sequential; supplied positions can use parallel or chunked computation within a block. The FFN weights are shared across positions; the rows are not six independent sets of model weights.</p>
+<p><strong>Number impression:</strong> One Qwen2.5-72B dense FFN has 726,663,168 weights in its three main projection matrices: 3 × 8192 × 29568. One selected Qwen3.5 routed expert has 12,582,912 such weights. This comparison explains individual projection scale; it is not a comparison of full-model cost, because Qwen3.5 stores many experts and evaluates multiple selected plus shared branches.</p>
+<h3>Choose a token, then process that token</h3>
+<pre class="math">Known six-position prompt → prefill → latest-position logits
+→ token-selection rule → first generated token
+→ embed that new token → one-position decode through the same stack
+→ next logits → next token → repeat</pre>
+<p>Suppose a selected token renders as “Hello.” That is an imagined token choice, not a model execution result. The model does not already have the next-step hidden state for it: its selected ID must be embedded and processed.</p>
+<p>In the dense model, the new position computes Q/K/V, reads cached earlier K/V plus its own K/V, and runs the dense FFN in every block. In the hybrid model, it updates each GDN state, extends each full-attention cache, and undergoes fresh routing in every MoE sublayer.</p>
+<aside class="hint">Final normalization and the LM head act on position vectors independently; they do not gather the earlier rows again. Mixing inside the blocks already supplied context. Generation needs the latest position's distribution; supervised training normally scores many supplied positions and combines their shifted-target losses.</aside>
+<h3>What changes during generation?</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Input-dependent, changing state</th><th>Fixed learned parameters</th></tr></thead>
+<tbody><tr><td>Hidden activations, attention weights, selected experts, K/V cache contents, recurrent/convolution state, and the growing token sequence.</td><td>Embedding table, mixer projections, router weights, expert/FFN weights, normalization parameters, and the LM head.</td></tr></tbody>
+</table></div>
+<aside class="keypoint">Ordinary inference has no optimizer update. A K/V cache or recurrent state is retained computation, not a learned weight. Both models share the outer autoregressive loop; their differences are inside the blocks and the kind of memory each block retains.</aside>
+<p>Sources: <a href="https://huggingface.co/Qwen/Qwen2.5-72B/blob/main/config.json">dense anchor config</a>; <a href="https://huggingface.co/Qwen/Qwen3.5-397B-A17B/blob/main/config.json">hybrid MoE anchor config</a>.</p>
+</section>
+<section class="chapter" id="ch21">
+<p class="eyebrow">Qwen architecture walkthrough</p>
+<h2>21. Compare current Qwen variants</h2>
+<p><strong>Purpose:</strong> Choose by the exact checkpoint's architecture and operating requirements, not just its version or parameter label.</p>
+<p>The official configs and cards for the three models below were retrieved for this tutorial. This is a <strong>selected current-source comparison</strong>, not a claim to list every release or identify the latest model in the whole family. Links to <code>main</code> can change.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Checkpoint</th><th>Hidden width / main blocks</th><th>Sequence-mixer counts</th><th>Feed-forward path</th><th>Released checkpoint inputs</th></tr></thead>
+<tbody>
+<tr><td>Qwen3.8-27B</td><td>5120 / 64</td><td>48 GDN + 16 full attention.</td><td>Dense FFN, intermediate width 17408.</td><td>Text, images, video; vision output width 5120.</td></tr>
+<tr><td>Qwen3.5-397B-A17B</td><td>4096 / 60</td><td>45 GDN + 15 full attention.</td><td>512 routed experts, top-10 + shared; expert intermediate width 1024.</td><td>Text, images, video; vision output width 4096.</td></tr>
+<tr><td>Qwen3.8-2.4T-A95B</td><td>8192 / 92</td><td>69 GDN + 23 full attention.</td><td>512 routed experts, top-10 + shared; expert intermediate width 2048.</td><td>Text only in this released checkpoint; no vision configuration.</td></tr>
+</tbody>
+</table></div>
+<p>All three repeat three GDN blocks followed by one full-attention block. The 27B model is therefore <strong>dense but hybrid</strong>. Dense describes its FFN; it does not mean full attention in every block.</p>
+<h3>Similar pattern, different geometry</h3>
+<div class="table-wrap"><table>
+<thead><tr><th>Checkpoint</th><th>Full attention: Q / KV heads, head width</th><th>GDN: QK / V heads, head widths</th><th>Native configured context / vocabulary</th></tr></thead>
+<tbody>
+<tr><td>Qwen3.8-27B</td><td>24 / 4, width 256.</td><td>16 / 48, widths 128.</td><td>262144 / 248320.</td></tr>
+<tr><td>Qwen3.5-397B-A17B</td><td>32 / 2, width 256.</td><td>16 / 64, widths 128.</td><td>262144 / 248320.</td></tr>
+<tr><td>Qwen3.8-2.4T-A95B</td><td>64 / 4, width 256.</td><td>16 / 128, widths 128.</td><td>262144 / 248320.</td></tr>
+</tbody>
+</table></div>
+<p><strong>Number impression:</strong> The 2.4T model has the same number of routed experts and selections as the 397B anchor, but each expert's three main matrices contain 50,331,648 weights: 3 × 8192 × 2048. That is four times the 397B anchor's 12,582,912, before accounting for its deeper stack. One 27B dense FFN's three projection matrices contain 267,386,880 weights: 3 × 5120 × 17408. These are scoped matrix counts, not complete checkpoint totals or latency predictions.</p>
+<aside class="caution">The 397B/17B and 2.4T/95B totals and activated counts are approximate model-card labels, not totals reconstructed from config alone. “A95B” does not mean only 95 billion parameters need to be stored. The routed bank must remain available somewhere, even when only selected experts are evaluated for one position.</aside>
+<h3>Checkpoint is not hosted service</h3>
+<p>The Qwen3.8-2.4T-A95B card explicitly identifies the released model as text-only and requiring thinking mode. It describes the hosted Qwen3.8-Max service as adding features such as vision input and non-thinking support. Do not transfer those service capabilities to this downloadable checkpoint. Likewise, a hosted extended context setting is not the same as the checkpoint's native configured context.</p>
+<h3>Practical consequences</h3>
+<ul>
+<li><strong>Weight capacity:</strong> budget full stored banks, precision, scales, and any offloading—not merely activated labels.</li>
+<li><strong>Per-token work:</strong> check actual mixer dimensions and selected expert widths. Sparse activation does not remove routing or communication costs.</li>
+<li><strong>Context memory:</strong> budget recurrent/convolution states plus full-attention K/V for each sequence. Multimodal positions also consume context.</li>
+<li><strong>Training:</strong> full-weight optimization needs gradient and optimizer state for trainable parameters. LoRA reduces that state, but still needs a compatible forward and input-gradient backward through frozen mixers and experts.</li>
+<li><strong>Runtime support:</strong> verify this checkpoint's hybrid mixers, expert dispatch, precision kernels, cache management, and optional MTP/speculative path in the chosen framework.</li>
+<li><strong>Quality:</strong> evaluate the real task. A newer post-trained release may improve behavior while retaining the same broad architectural foundation.</li>
+</ul>
+<aside class="keypoint">Read in this order: input support → block layout → head geometry → FFN/expert geometry → precision and retained memory → runtime → measured task quality. This makes an unfamiliar config readable without confusing model capacity, active computation, and deployment cost.</aside>
+<p>Official sources checked: <a href="https://huggingface.co/Qwen/Qwen3.8-27B">27B model card</a> and <a href="https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json">config</a>; <a href="https://huggingface.co/Qwen/Qwen3.5-397B-A17B">397B model card</a> and <a href="https://huggingface.co/Qwen/Qwen3.5-397B-A17B/blob/main/config.json">config</a>; <a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B">2.4T model card</a> and <a href="https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B/blob/main/config.json">config</a>.</p>
+</section>
+<section class="chapter" id="glossary"><p class="eyebrow">Keep beside you</p><h2>Plain-English glossary</h2><dl class="glossary"><dt>Token / token ID</dt><dd>A token is an item from a model’s vocabulary; a token ID is its integer index. A written word can contain several tokens.</dd><dt>Sequence / batch</dt><dd>A sequence is one ordered list of token occurrences. A batch holds several sequences; it does not normally combine their contexts.</dd><dt>Vector / hidden width</dt><dd>A vector is a list of numbers. Hidden width D is the number of components in each position’s main vector, not the number of axes.</dd><dt>Weight / parameter</dt><dd>A learned setting that normally stays fixed while generating a response. Matrices, normalization scales, and embeddings can contain parameters.</dd><dt>Activation / hidden state</dt><dd>A computed intermediate value for a particular input. A hidden state is the vector representing a position at some processing stage. Activation function means a nonlinear rule, a related but different use of “activation”.</dd><dt>Query / key / value</dt><dd>A query asks what information to read; keys provide numerical matches; values supply the information to mix. These are learned projections, not literal questions or answers.</dd><dt>Attention weight / vocabulary probability</dt><dd>Attention weights form a mixture across readable positions. Vocabulary probabilities describe which token might come next. Both can use softmax, but over different axes.</dd><dt>Head / block / layer</dt><dd>A head is one attention view. A transformer block combines sequence mixing and a feed-forward path, with normalization and residual connections. A model often calls each repeated block one layer.</dd><dt>Residual connection</dt><dd>Add the branch output to the same position’s branch-input vector. It is not the value vector from a previous token.</dd><dt>Logit / LM head</dt><dd>A logit is a raw score for a vocabulary token. The language-model head maps a final hidden vector into these scores.</dd><dt>Causal mask / loss mask</dt><dd>A causal mask prevents reading future positions. A loss mask decides which prediction errors contribute to a training objective.</dd><dt>Teacher forcing</dt><dd>Supply the known correct earlier response tokens during supervised training. Predictions for many positions can then be computed together, without first sampling an answer.</dd><dt>Gradient / optimizer</dt><dd>A gradient describes local sensitivity of loss to a value or parameter. An optimizer uses parameter gradients to update trainable weights.</dd><dt>LoRA</dt><dd>Low-rank adaptation: train a small extra matrix path around selected existing weight matrices. It does not add transformer blocks.</dd><dt>Router / expert / top-k</dt><dd>A router scores available expert feed-forward networks. Top-k selects the k highest-scoring experts for that position. A shared expert is a separate always-active path in designs that use one.</dd><dt>Prefill / decode / KV cache</dt><dd>Prefill processes a supplied prompt. Ordinary cached decoding processes a newly selected token using earlier keys and values retained at full-attention layers.</dd><dt>Sequence length / context window</dt><dd>Sequence length is the current number of positions. A context window is a supported capacity. The deployed limit can differ from the model’s advertised capacity.</dd><dt>Recurrent state</dt><dd>A compact running memory updated as positions arrive. It is not necessarily a list of exact earlier tokens or their vectors.</dd><dt>Hybrid sequence mixing</dt><dd>Different blocks use different sequence mixers, such as Gated DeltaNet and full attention. Hybrid mixing and dense-versus-MoE feed-forward design are separate choices.</dd><dt>Quantization</dt><dd>Represent numbers with a limited set of values, usually using scale factors. Storage format, computation format, and accumulation format can differ.</dd><dt>Activated parameters</dt><dd>Parameters involved in the selected computation for a token; not a statement that every other weight disappears from storage.</dd><dt>Data / tensor / pipeline / expert parallelism</dt><dd>Divide different sequences, pieces of a matrix computation, consecutive groups of layers, or expert ownership across devices. These mechanisms can be combined.</dd></dl></section><section class="chapter" id="sources"><p class="eyebrow">Source boundaries</p><h2>Sources and diagram index</h2><p>This tutorial follows the approved 21-section roadmap and the transformer-related explanations and follow-up questions from your guidance chat. Unrelated conversation branches and duplicate messages are omitted.</p><ul><li>Your three supplied ZIP files: transformer1.zip, transformer2.zip, transformer3.zip.</li><li>The supplied Qwen3.5-397B-A17B configuration, included in full in Chapter 19.</li><li>Official model configs and implementation references are linked beside the Qwen discussions. Treat release comparisons as the documented snapshot stated there, not as a promise about all future releases.</li></ul><p>The original PNG diagrams are embedded without alteration. Word-level sequences, head labels, simple matrices, and small training calculations are teaching examples unless explicitly identified as real configuration values. Read the adjacent caveats where a diagram simplifies a real implementation.</p><h3>All 14 supplied diagrams, in teaching order</h3><ol><li><a href="#ch2">Chapter 2</a> — Transformer Block Data and Weights Overview.png</li><li><a href="#ch5">Chapter 5</a> — Transformer Attention GQA Infographic.png</li><li><a href="#ch7">Chapter 7</a> — image.png</li><li><a href="#ch8">Chapter 8</a> — From Context to the Next Token.png</li><li><a href="#ch9">Chapter 9</a> — One Sequence, Two Vectors, One Model.png</li><li><a href="#ch9">Chapter 9</a> — How a Model Learns_ One Training Step.png</li><li><a href="#ch9">Chapter 9</a> — Shared Weight Update Infographic.png</li><li><a href="#ch9">Chapter 9</a> — Inside a Transformer Training Pipeline.png</li><li><a href="#ch10">Chapter 10</a> — LoRA Inside Transformer Blocks_ A Visual Guide.png</li><li><a href="#ch12">Chapter 12</a> — Dense vs. MoE Transformer Block Infographic.png</li><li><a href="#ch16">Chapter 16</a> — Transformer datatypes_ storage, computation, accumulation.png</li><li><a href="#ch16">Chapter 16</a> — Four ways to distribute transformer work-1.png</li><li><a href="#ch16">Chapter 16</a> — Corrected Transformer Routing and Pipeline Guide-2.png</li><li><a href="#ch19">Chapter 19</a> — Qwen3.5 Architecture_ From Configuration to Computation.png</li></ol><p>This is an original tutorial using clear technical-book conventions: intuition, numerical examples, hints, and key points. It is not an O’Reilly or For Dummies publication.</p></section><footer><p>Created by <a href="https://www.linkedin.com/in/soon-ee-ong/">Ong Soon Ee</a> with AI-assisted drafting. Teaching examples are illustrative, not measured model activations. No visitor analytics or tracking scripts are installed.</p><p><a href="https://github.com/OngSoonEe/llm-transformer-learning">Source and contributions</a> · <a href="https://github.com/OngSoonEe/llm-transformer-learning/blob/main/LICENSE.md">Reuse and licensing</a></p></footer></main></div><dialog aria-label="Enlarged supplied diagram" id="diagram-dialog"><div class="zoom-toolbar"><button id="zoom-close" type="button">Close</button><label for="zoom-range">Zoom</label><input id="zoom-range" max="250" min="50" step="10" type="range" value="100"/><output id="zoom-value">100%</output></div><div class="zoom-wrap"><img alt="Enlarged diagram" id="zoom-image"/></div></dialog><template id="widget-attention"><div class="widget" id="attention-lab"><h3>Number idea: scores choose; values supply</h3><p>This is one query row and one toy head. Three earlier positions provide values. Change the scores and watch the mixture change. The values do not change.</p><div class="flow"><span>Q · K → scaled scores</span><span class="arrow">→</span><span>softmax weights</span><span class="arrow">→</span><span>weighted sum of V</span></div><label for="score-cat">Scaled score for “cat”: <output id="score-cat-val"></output></label><input id="score-cat" max="3" min="-3" step="0.1" type="range" value="2"/><label for="score-tired">Scaled score for “tired”: <output id="score-tired-val"></output></label><input id="score-tired" max="3" min="-3" step="0.1" type="range" value="1"/><p class="small">The score for “It” stays at 0. These are already scaled scores; the toy values are cat=[2,0], tired=[0,2], It=[1,1]. Labels simplify tokenization and do not prescribe real head meanings.</p><div aria-live="polite" class="bars" id="attn-bars"></div><pre class="math" id="attn-result"></pre><aside class="keypoint"><strong>Key point.</strong> These probabilities select information from positions. They are not probabilities of the next vocabulary token.</aside></div></template>
+<template id="widget-mask"><div class="widget" id="mask-lab"><h3>Visual idea: one sequence, different allowed views</h3><p>Every row belongs to the same sequence and passes through the same shared block. Select a query position to see what it may read.</p><label for="mask-position">Query position</label><select id="mask-position"><option value="0">0 — Assistant-start</option><option value="1">1 — I</option><option selected="" value="2">2 — am</option><option value="3">3 — fine</option></select><div aria-label="Causal visibility matrix; a row may read itself and earlier positions, not future positions" class="matrix" id="causal-grid" role="img"></div><p aria-live="polite" class="result" id="mask-result"></p><p class="small">The prompt is omitted to keep the picture small. It is also available to the answer positions. Allowed does not mean equally weighted: attention computes a separate mixture for each row.</p></div></template>
+<template id="widget-prefill"><div class="widget" id="prefill-lab"><h3>Visual idea: chunking keeps one context</h3><p>A prompt has eight positions. A toy runtime processes it in chunks of three, then starts generation. Click through the steps.</p><div class="token-row" id="prefill-tokens"></div><p aria-live="polite" class="result" id="prefill-state"></p><button id="prefill-next" type="button">Next step</button> <button id="prefill-reset" type="button">Reset</button><p class="small">Green: earlier positions already processed. Amber: positions being processed now. Pale: not processed yet. Each later chunk can read the allowed earlier context through retained cache/state. The chunk size is a runtime choice, not a new context-window limit.</p></div></template>
+<template id="widget-state"><div class="widget" id="state-lab"><h3>Number idea: a running state is not a token list</h3><p>Use a deliberately simple scalar memory: s<sub>t</sub> = 0.5 × s<sub>t−1</sub> + v<sub>t</sub>. It always stores one number, even as more values arrive. This is not the actual Gated DeltaNet equation.</p><div class="flow"><span>one new input</span><span class="arrow">→</span><span>update existing state</span><span class="arrow">→</span><span>one new state</span></div><pre aria-live="polite" class="math" id="state-result"></pre><button id="state-next" type="button">Add next value</button> <button id="state-reset" type="button">Reset</button><p class="small">Toy incoming values: 2, 4, 1, 3. A compact state transforms and mixes information; it cannot generally recover the exact original list. A hybrid model also has full-attention layers with their own growing KV caches.</p></div></template><script id="config-json" type="application/json">{
+    "architectures": [
+        "Qwen3_5MoeForConditionalGeneration"
+    ],
+    "image_token_id": 248056,
+    "model_type": "qwen3_5_moe",
+    "text_config": {
+        "attention_bias": false,
+        "attention_dropout": 0.0,
+        "attn_output_gate": true,
+        "dtype": "bfloat16",
+        "eos_token_id": 248044,
+        "full_attention_interval": 4,
+        "head_dim": 256,
+        "hidden_act": "silu",
+        "hidden_size": 4096,
+        "initializer_range": 0.02,
+        "layer_types": [
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention",
+            "linear_attention",
+            "linear_attention",
+            "linear_attention",
+            "full_attention"
+        ],
+        "linear_conv_kernel_dim": 4,
+        "linear_key_head_dim": 128,
+        "linear_num_key_heads": 16,
+        "linear_num_value_heads": 64,
+        "linear_value_head_dim": 128,
+        "max_position_embeddings": 262144,
+        "mlp_only_layers": [],
+        "model_type": "qwen3_5_moe_text",
+        "moe_intermediate_size": 1024,
+        "mtp_num_hidden_layers": 1,
+        "mtp_use_dedicated_embeddings": false,
+        "num_attention_heads": 32,
+        "num_experts": 512,
+        "num_experts_per_tok": 10,
+        "num_hidden_layers": 60,
+        "num_key_value_heads": 2,
+        "rms_norm_eps": 1e-06,
+        "router_aux_loss_coef": 0.001,
+        "shared_expert_intermediate_size": 1024,
+        "use_cache": true,
+        "vocab_size": 248320,
+        "mamba_ssm_dtype": "float32",
+        "rope_parameters": {
+            "mrope_interleaved": true,
+            "mrope_section": [
+                11,
+                11,
+                10
+            ],
+            "rope_type": "default",
+            "rope_theta": 10000000,
+            "partial_rotary_factor": 0.25
+        }
+    },
+    "tie_word_embeddings": false,
+    "transformers_version": "4.57.0.dev0",
+    "video_token_id": 248057,
+    "vision_config": {
+        "deepstack_visual_indexes": [],
+        "depth": 27,
+        "hidden_act": "gelu_pytorch_tanh",
+        "hidden_size": 1152,
+        "in_channels": 3,
+        "initializer_range": 0.02,
+        "intermediate_size": 4304,
+        "model_type": "qwen3_5_moe",
+        "num_heads": 16,
+        "num_position_embeddings": 2304,
+        "out_hidden_size": 4096,
+        "patch_size": 16,
+        "spatial_merge_size": 2,
+        "temporal_patch_size": 2
+    },
+    "vision_end_token_id": 248054,
+    "vision_start_token_id": 248053
+}</script><script src="assets/tutorial.js"></script></body></html>
