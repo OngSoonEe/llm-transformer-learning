@@ -49,7 +49,7 @@ vector dimension = 3 components</pre>
 <p>So an 8,192-component vector is still a one-dimensional array. Here <strong>tensor rank</strong> means the number of axes, not the separate linear-algebra concept of matrix rank. <strong>Hidden dimension</strong> means the number of components in each position's main internal vector.</p>
 <p>The components collectively carry useful information. Their job is not only to measure how close two tokens are. Some coordinates can carry useful signals, but there is no universal list of labels such as “city”, “noun”, or “tired” for the coordinates. The whole representation works with the model's other learned operations.</p>
 <h3>A learned matrix mixes components</h3>
-<p>Each output component of a linear projection is a weighted sum of input components. Throughout this tutorial, activations are rows and a stored weight matrix has shape <strong>[output components, input components]</strong>.</p>
+<p>Each output component of a linear projection is a weighted sum of the input components. Throughout this tutorial, activation vectors are represented as row vectors, and stored weight matrices have shape <strong>[number of output components, number of input components]</strong>, so the projection is computed as Y = XWᵀ.</p>
 <pre class="math">x: [Din]                 W: [Dout, Din]
 y = x Wᵀ + b             y: [Dout]
 
